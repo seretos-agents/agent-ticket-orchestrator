@@ -134,46 +134,77 @@ packages = list_tickets(project_id, column="Todo", status="open", limit=100, omi
 
 **Only Todo.** Never read Backlog or Planned as candidates — those columns are
 the human's staging area and the gatekeeper's output; what is in Todo is what
-the human released. Process in board order (oldest first), reordered by
-dependency as described next.
+the human released. The list comes back in board order (oldest first); keep
+that order, it is the order Step 1a passes on.
+
+This step runs at the top of **every** iteration of the Step 2 loop, not once
+per run: the Todo column changes while the run works (a package leaves it when
+you claim it, a gatekeeper split session puts two tickets back into it), and
+only a fresh read sees that.
 
 ### 1a. Order Todo by dependency
 
-```
-1. board_order = the Todo tickets from Step 1, oldest first (unchanged).
-2. For each package p, one call:
-     get_ticket(project_id, p, include_relations=True, include_comments=False)
-   blockers[p] = [r.ticket_id for r in relations if r.kind == "blocked_by"]
-   Only on a provider whose list_relation_kinds provider_support lacks
-   blocked_by, ALSO read the newest "## Dependency (gatekeeper)" comment's
-   <!-- gatekeeper:deps v1 ... --> block via `list_comments(project_id,
-   ticket_id=p, order="desc", limit=10, body_max_chars=600)` and take its
-   blocked_by: line — same dumb key: value reader as adev:event, one more
-   block, no new mechanism.
-3. Classify every blocker b (memoise per b for the whole run — see "When is
-   a blocker resolved" below):
-     - b resolved            -> drop the edge
-     - b in board_order      -> INTERNAL edge, orderable inside this run
-     - otherwise             -> EXTERNAL-OPEN
-4. Every package with an EXTERNAL-OPEN blocker is SKIPPED. Remove it from the
-   graph; do not move its card; report
-   `skipped: blocked by #<b> (not closed)`.
-5. Topological order over what remains, INTERNAL edges only — Kahn with a
-   board-order tie-break, and no other heuristic:
-     ready = packages with no unsatisfied blocker, in board order
-     repeat: emit the FIRST of ready (board order); re-evaluate the packages
-             it unblocked; merge them back into ready keeping board order
-   Deterministic, and the only reordering this skill ever performs. There is
-   no priority field, no "smallest first", nothing else.
-6. Transitive skip: a package whose only blocker was itself SKIPPED is
-   SKIPPED too — `skipped: blocker #<b> skipped`.
-7. Cycle. Anything still unemitted when `ready` runs empty is in a cycle or
-   downstream of one. Emit those at the very END, in board order, and record
-   one line: `dependency cycle: #a -> #b -> #a, processed in board order`.
-   NEVER drop a package and NEVER abort the run for a cycle: a cycle is a
-   human's ten-second fix on the board, and losing a night's other seven
-   packages to it is the failure mode this skill exists to avoid.
-```
+The decision which package runs next is made by a script, never by you. Build
+its input fresh on every iteration:
+
+1. For each Todo ticket `p` from Step 1, one call:
+
+   ```
+   get_ticket(project_id, p, include_relations=True, include_comments=False)
+   ```
+
+   Its blockers are the `ticket_id`s of the relations whose `kind` is
+   `blocked_by`. Only on a provider whose `list_relation_kinds`
+   `provider_support` lacks `blocked_by`, also read the newest
+   `## Dependency (gatekeeper)` comment's `<!-- gatekeeper:deps v1 … -->` block
+   with `list_comments(project_id, ticket_id=p, order="desc", limit=10, body_max_chars=600)`
+   and take its `blocked_by:` line — the same dumb `key: value` reader as
+   `adev:event`.
+2. For every blocker that is **not** itself in this Todo list, decide whether
+   it is resolved (*When is a blocker resolved*, below). `closed` is the list
+   of those that are.
+3. Pipe one JSON object, the Todo tickets in board order, to the script:
+
+   ```
+   {"todo": [{"id": <p>, "blocked_by": [<b>, …], "skip": "<reason or empty>"}, …],
+    "closed": [<b>, …]}
+   ```
+
+   ```
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/run/todo-verdict.py"
+   ```
+
+   `skip` is the ticket's reason from this run's **skip set** (step 2, below),
+   verbatim, or `""` when it has none.
+
+The script orders the Todo tickets topologically over their `blocked_by`
+edges with a board-order tie-break, and nothing else — no priority, no size.
+A ticket blocked by something neither in Todo nor closed is skipped, and so is
+a ticket with **any** skipped blocker. A dependency cycle is still dispatched,
+its members in board order after everything else; a cycle never aborts the
+run and never drops a package — it is a human's ten-second fix on the board.
+
+Read its exit code and its stdout (`key: value` lines):
+
+- **Exit 0** (`verdict: dispatch`) → the package to process next is the one
+  named by `next: #<id>`. Go to step 2 with it.
+- **Exit 2** (`verdict: none`, with `none: todo-empty` or `none: all-skipped`)
+  → nothing in Todo can run. The loop ends; go to Step 3.
+- **Exit 1** (`error: …`, no `verdict:` line) → there is no verdict. Record
+  `todo-verdict error: <the error line>` for the report and end the loop; go
+  to Step 3. Never work out an order yourself instead.
+
+Act on `next:` alone. The `order:`, `ticket:` and `cycle:` lines are
+diagnostics, never a queue to walk: after the next package's terminal event
+the whole picture may have changed, and only a fresh verdict knows.
+
+- A `ticket: #<id> skipped: <reason>` line → do not move its card; it stays in
+  **Todo**. Keep `skipped: <reason>` as that ticket's report note until a
+  later verdict of this run says otherwise: a newer `skipped:` line replaces
+  it, and a ticket a later verdict names in `next:` is processed and reported
+  with that outcome instead.
+- A `cycle: #a -> #b -> #a, processed in board order` line → record it for the
+  report, once per distinct line across the run.
 
 Reading a blocker's ticket by id is not "touching Backlog or Planned". That
 rule forbids *selecting candidates from* and *writing to* those columns; it
@@ -188,7 +219,7 @@ A blocker `#b` is **resolved** exactly when it is closed. Decide it like this:
 1. `#b` is in `done_this_run` — the set of package tickets this skill closed
    itself earlier in this very run → resolved. The set is authoritative and
    needs no re-read.
-2. Otherwise read it once:
+2. Otherwise read it:
    `get_ticket(project_id, #b, include_comments=False, include_relations=False)`.
 3. `#b` is `status: closed` → resolved, however it came to be closed: closed
    by this skill after its merge, an epic child closed by the `Closes #<n>`
@@ -200,9 +231,42 @@ Closed alone is enough because this skill closes every package ticket it
 finishes, an epic included, so no finished work stays open; no column is
 consulted.
 
-One `get_ticket` per distinct blocker per run, memoised. Nothing here polls.
+A `closed` answer is memoised for the rest of the run — a closed ticket does
+not reopen under you. An open answer is not: read that blocker again when you
+build the next verdict's input, because it can close while the run works (a
+human closes it, or another package's PR closes it). That is one read per
+open blocker per loop iteration; nothing here polls or waits.
 
 ### 2. Per package, sequentially
+
+**The loop.** Steps 1, 1a and 2 repeat until a verdict ends them:
+
+1. Step 1 — read Todo.
+2. Step 1a — build the input, run `todo-verdict.py`. Exit 2 or exit 1 → leave
+   the loop, go to Step 3.
+3. Exit 0 → process the package named by `next:` through 2a–2d below, until
+   its reaction in 2c is finished: merged and closed, moved to Question, or
+   handed to a gatekeeper split session whose outcome you have read.
+4. Back to 1.
+
+The loop continues or ends on the script's exit code alone. Never end it
+because the ticket or comment history looks finished, and never keep going
+from an `order:` line you read earlier — each iteration's verdict replaces the
+last one. A package processed in this run is out of Todo afterwards (closed,
+in Question, or in Doing), so it is not named again, with one exception: after
+a gatekeeper split (2c) the original and its new code half are both back in
+Todo, and a later verdict names each of them once it is runnable — the code
+half first, the original once the code half is closed.
+
+**The run's skip set.** Some packages are given up on at dispatch time, in 2a:
+`prose lane not installed`, `branch check failed: <error line>`. Add such a
+package to the skip set with exactly that reason, and add a package to it with
+the reason `session ceiling reached` when a verdict names it after it has
+already had three package sessions in this run (see *Merge outcomes are
+classified*, the hard ceiling). A package in the skip set is passed with its
+reason as `skip` on every later verdict of this run, and the verdict is then
+run again at once, without dispatching anything — the script reports the
+package as `skipped: <reason>` and skips its dependents with it.
 
 **Why strictly one at a time, merge before next:** every package's PR is
 merged by you on `ci-green` *before* the next package's worktree is created,
@@ -224,20 +288,15 @@ are classified, and a conflict is a retry* below.
 
 **a. Claim + worktree.**
 
-**Re-check blockers at dispatch time.** Re-read `blockers[p]` one last time,
-against the same resolved test as 1a. Step 1a's order was computed before any
-package ran; the run's own outcomes are the only new information, and they
-arrive too late for the ordering pass.
-
-- Every blocker resolved → proceed exactly as below.
-- A blocker that was in Todo was **not** closed by this run — you left it in
-  `Question` or `Doing` → **skip this package**. Leave the card in
-  **Todo**, do not move it to Doing, do not cut a worktree, do not start a
-  session, and record `skipped: blocker #<b> ended in <column>`. Then
-  continue with the next package. This is the
-  blocker-in-Todo-that-did-not-land case, and it degrades to the ordinary
-  skip on purpose: a package whose precondition did not land is exactly as
-  un-runnable as one whose blocker was never in Todo at all.
+**Re-check blockers at dispatch time.** There is no separate re-check: the
+verdict that named this package was computed from a fresh Todo read and fresh
+blocker reads immediately before this dispatch, so it already is the re-check.
+A blocker this run processed but did not close — it ended in `Question` or
+`Doing` — is neither in Todo nor closed, so the script skips its dependents
+(`skipped: blocked by #<b> (not closed)`) and never names them in `next:`.
+This degrades to the ordinary skip on purpose: a package whose precondition
+did not land is exactly as un-runnable as one whose blocker was never in Todo
+at all.
 
 A skip is never an abort and never a Question. Record it and continue — the
 same rule as every other failure mode in this skill.
@@ -248,15 +307,16 @@ engineer is an optional plugin, not a dependency. For a package carrying
 `python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/prose-lane-available.py" "<local_path>"`
 before claiming it. `exit 2` (unavailable) → **skip this package** exactly
 like a blocked one: leave the card in **Todo**, cut no worktree, start no
-session, record `skipped: prose lane not installed`, continue. A session
+session, add it to the skip set with `prose lane not installed`, and run the
+verdict again (step 2, *The run's skip set*). A session
 started on a skill that does not exist would burn the `failed` retry and end
 in Question for something a human fixes with one settings line.
 
 **Gate on the previous package — verify, do not assume.** Here "previous
-package" means the last package this run actually *processed*, in the
-dependency order from Step 1a — not necessarily the one immediately before it
-in board order. Skip this for the first package processed in the run (Step
-0's pre-flight already swept every carried-over `pkg/*` PR).
+package" means the package this run processed just before this one — the one
+the previous loop iteration dispatched, not the one before it in board order.
+Skip this for the first package processed in the run (Step 0's pre-flight
+already swept every carried-over `pkg/*` PR).
 
 ```
 still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>", limit=5)
@@ -292,8 +352,9 @@ still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>
      - **exit 3** (`branch: new`) → the branch exists nowhere. Create the
        worktree with `base=<default branch>`.
      - **exit 1** (`error: …`) → **skip this package**: leave the card in
-       **Todo**, cut no worktree, start no session, record
-       `skipped: branch check failed: <error line>`, continue. Never read an
+       **Todo**, cut no worktree, start no session, add it to the skip set
+       with `branch check failed: <error line>`, and run the verdict again
+       (step 2, *The run's skip set*). Never read an
        error as `new`: a fresh cut from the default branch would discard any
        commits the branch already carries.
 - `update_ticket(project_id, ticket_id, custom_fields={"Status": <native Doing>}, response="light")`. Every `update_ticket` and `merge_pr` in this skill passes `response="light"` — a light echo (`seretos-agents/agent-project-issues#314`) — and reads nothing out of them but `pull_request.merged` and, on a merge, `pull_request.merge_commit_sha`.
@@ -504,11 +565,12 @@ So instead of setting the package aside:
       For a `## Lane split (gatekeeper)` comment **newer than your `## Blocked triage (run)`
       comment**, fetch that one comment in full with
       `get_comment(project_id, comment_id=<its id>, ticket_id=<package>)`. When its
-      `gatekeeper:lane` block carries `code_ticket: #<n>`, the split landed: result `Skipped`,
-      note `split: code half #<n>`. The split session has already put
-      both tickets where they belong (Todo, or Question when the gatekeeper had to ask); you
-      move neither, and you do not pick either up in this run — Step 1a's order is computed
-      once, and the next run finds them.
+      `gatekeeper:lane` block carries `code_ticket: #<n>`, the split landed: record the note
+      `split: code half #<n>` for the original. The split session has already put both
+      tickets where they belong (Todo, or Question when the gatekeeper had to ask); you move
+      neither. Return to the top of the loop (step 2, *The loop*): the next verdict decides
+      what runs. The original carries `blocked_by` its code half, so the verdict names the
+      code half first and the original only once the code half is closed.
    5. No such comment, or its block carries no `code_ticket:` → `add_comment` with one line — *"Escalated: the gatekeeper split session
       ended without a lane split — see the `triage:split` block above."* — followed by the block of
       `ato-event.py render --event escalated --package <package id> --reason split-failed <session>`,
@@ -533,7 +595,7 @@ So instead of setting the package aside:
 
 This replaces the old two-stage design entirely: there is no more "second pass at the end of the
 run" for `blocked` packages, and `blocked_list` does not exist. A `blocked` event is triaged the
-moment it is read, in board order, exactly like every other reaction in this step.
+moment it is read, exactly like every other reaction in this step.
 
 **When the merge fails — classify before reacting.**
 
@@ -690,20 +752,24 @@ One table: `package · result (Done / Question / Skipped) · note · PR
 · rounds (from the last event's `rounds`) · attempts`. `Done` in the result
 column means the PR merged and the package ticket is closed — a result, not a
 column. A package the gatekeeper split session split (2c, *Blocked events are
-triaged*) is `Skipped` with the note `split: code half #<n>`: like every
-skip, it is not processed further in this run, and its two tickets wait where
-the split session left them (Todo, or Question when the gatekeeper had to
-ask). `note` is empty for a
+triaged*) carries the note `split: code half #<n>`, and its result is the one
+its later dispatch in this run reached (Done or Question); it is `Skipped`
+only when no later verdict of this run named it again. The code half gets a
+row of its own like any other package. `note` is empty for a
 clean Done, and otherwise one of: `merged after rebase`, `merged externally`,
 `merge-conflict`, `merge-failed`, `blocked-escalated`,
-`manual cleanup: <path>`, `skipped: blocked by #<b> (not closed)`,
-`skipped: blocker #<b> ended in <column>`, `skipped: blocker #<b> skipped`,
-`skipped: prose lane not installed`, `skipped: branch check failed: <error line>`,
-`split: code half #<n>`, `split-failed`.
+`manual cleanup: <path>`, `split: code half #<n>`, `split-failed`, or a
+`skipped: <reason>` line copied verbatim from the ticket's last `ticket:` line
+in a verdict — `skipped: blocked by #<b> (not closed)`,
+`skipped: blocker #<b> skipped`, or a skip-set reason
+(`skipped: prose lane not installed`,
+`skipped: branch check failed: <error line>`,
+`skipped: session ceiling reached`).
 Above the table, one line per carried-over PR found by the Step 0 pre-flight,
-one line per sequencing violation observed during the run, and one line per
-dependency cycle found in Step 1a (`dependency cycle: #a -> #b -> #a,
-processed in board order`) — all named above.
+one line per sequencing violation observed during the run, each distinct
+`cycle: #a -> #b -> #a, processed in board order` line a verdict printed, and
+the `todo-verdict error: <line>` line when a verdict failed and ended the loop
+early — all named above.
 
 The run is **SUCCESS only if every package reached Done**. Anything else is
 **PARTIAL** with the list of what is not Done and which column it sits in. A skipped
@@ -824,7 +890,12 @@ exactly as it already was. **Hard ceiling: at most three package sessions per
 package per run, at most one of which is a rebase session, at most one of
 which is a triage-driven re-dispatch.** The split session is not a package
 session and does not raise `attempt`; it uses up the triage-driven
-re-dispatch's slot, and a split package gets no further session in this run. A shared counter would reproduce the exact dead
+re-dispatch's slot. The split reaction itself dispatches nothing: the original
+runs again only when a later verdict in the loop names it — after its code
+half is closed — as `attempt+1`, inside the same three-session ceiling, and
+with triage-once still in force, so a second `blocked` event on it escalates
+without triage. A package the verdict names after its third session in this
+run joins the skip set instead (step 2, *The run's skip set*). A shared counter would reproduce the exact dead
 end this incident describes: a package that spent its one retry on an earlier
 crash, then reached `ci-green`, then had nothing left for a purely mechanical
 conflict.
@@ -879,7 +950,11 @@ as an ordinary retry, just `attempt+1`.
   script, `attempt+1`, before it escalates. Branch protection, a missing
   permission, and an unresolved mergeability state remain human-only.
 - **A blocked package is skipped, never reordered past its blocker and never
-  escalated.** It stays in Todo; the next run picks it up once the blocker
-  is closed. See *1a. Order Todo by dependency*.
+  escalated.** It stays in Todo and is picked up by the first verdict that
+  reports it runnable — later in this run when this run closes its blocker,
+  otherwise in a later run. See *1a. Order Todo by dependency*.
+- **The loop runs on `todo-verdict.py`'s exit code.** Exit 0 dispatches
+  `next:`, exit 2 or exit 1 ends it. Never continue or stop on a judgement
+  from ticket or comment history, and never walk a stored `order:` line.
 - **A dependency cycle never stops the night.** Report it, process the
-  cycle's members in board order at the end, continue.
+  cycle's members in board order after everything else, continue.
