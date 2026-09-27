@@ -83,7 +83,7 @@ The fix is a three-level split: `bundler`/`clarifier` **report** raw ids (`depen
 
 **The provider branch is permanent.** No relation kind is portable across all three providers; which provider lacks which kind is in the agent-project-issues skill, "Relations: direction matters", which leaves the fallback convention to the caller. GitLab's record is `relates_to` plus a `<!-- gatekeeper:deps v1 -->` comment block, read by the same dumb `key: value` reader as `adev:event` — one parsing convention in this repo, not two.
 
-A dependency cycle, or a package whose blocker never resolves, never aborts a `run` — Step 1a reports it (`dependency cycle: …`, `skipped: …`) and processes the cycle's members in board order at the end, the same "record it and continue" discipline as every other `run` failure mode.
+A dependency cycle, or a package whose blocker never resolves, never aborts a `run` — Step 1a reports it (`cycle: …`, `skipped: …`) and processes the cycle's members in board order at the end, the same "record it and continue" discipline as every other `run` failure mode.
 
 ### A ticket's own sequencing statement is not a collision, and a relation write is verified, not assumed
 
