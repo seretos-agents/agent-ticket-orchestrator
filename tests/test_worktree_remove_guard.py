@@ -397,8 +397,19 @@ def _matching_command(entries, tool_name):
 
 
 def _make_shim(bindir, name, real_path):
+    # `/bin/sh` is an absolute path the kernel resolves directly from the
+    # shebang line, without any PATH lookup -- unlike `#!/usr/bin/env bash`,
+    # whose `env bash` has to find `bash` *itself* via the child process's
+    # PATH. These shims run under the test's restricted PATH (bindir only,
+    # deliberately excluding bash/sh), so on a real Linux runner `env` can't
+    # locate `bash` and the shim fails to exec at all -- the outer loop then
+    # (silently, via `2>/dev/null`) treats that candidate as absent and falls
+    # through to "no Python 3 interpreter", even though the shim file exists.
+    # Windows/MSYS happened not to exhibit this (Git Bash resolves `env bash`
+    # through its own fixed install paths, not strictly the subprocess PATH),
+    # which is why this passed locally and only broke on ubuntu-latest CI.
     shim = bindir / name
-    shim.write_text(f'#!/usr/bin/env bash\nexec "{real_path}" "$@"\n', encoding="utf-8")
+    shim.write_text(f'#!/bin/sh\nexec "{real_path}" "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
     return shim
 
