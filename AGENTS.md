@@ -83,7 +83,7 @@ The fix is a three-level split: `bundler`/`clarifier` **report** raw ids (`depen
 
 **The provider branch is permanent.** No relation kind is portable across all three providers; which provider lacks which kind is in the agent-project-issues skill, "Relations: direction matters", which leaves the fallback convention to the caller. GitLab's record is `relates_to` plus a `<!-- gatekeeper:deps v1 -->` comment block, read by the same dumb `key: value` reader as `adev:event` — one parsing convention in this repo, not two.
 
-A dependency cycle, or a package whose blocker never resolves, never aborts a `run` — Step 1a reports it (`dependency cycle: …`, `skipped: …`) and processes the cycle's members in board order at the end, the same "record it and continue" discipline as every other `run` failure mode.
+A dependency cycle, or a package whose blocker never resolves, never aborts a `run` — Step 1a reports it (`cycle: …`, `skipped: …`) and processes the cycle's members in board order at the end, the same "record it and continue" discipline as every other `run` failure mode.
 
 ### A ticket's own sequencing statement is not a collision, and a relation write is verified, not assumed
 
@@ -128,7 +128,7 @@ Two lower plugins exist: `agent-autonomous-developer` (code, test-first) and `ag
 
 **Why the split session's Todo write is not a third mover.** `Planned → Todo` stays human-only for every pass a human starts. The original reached Todo by a human's release and was dispatched from there; the split re-files that same released scope into two tickets, so moving both back continues that release instead of making a new one. The two parameters are the provenance: only `start-package-session.sh --gatekeeper-split` passes them, no pass a human starts carries them, and `advance_to_todo` without `single_ticket` STOPs.
 
-**Bounds.** One split session per package per run — it takes the triage-driven re-dispatch's slot and inherits triage-once. One mid-development split per ticket, ever — a `code_ticket:` in the ticket's `gatekeeper:lane` record makes `triage` escalate and the gatekeeper refuse, because #40's lesson was that a cut which can spawn further cuts cascades without limit. After a split, `run` does not re-enumerate Todo in the same run: Step 1a's order is computed once, and the next run picks both tickets up in dependency order.
+**Bounds.** One split session per package per run — it takes the triage-driven re-dispatch's slot and inherits triage-once. One mid-development split per ticket, ever — a `code_ticket:` in the ticket's `gatekeeper:lane` record makes `triage` escalate and the gatekeeper refuse, because #40's lesson was that a cut which can spawn further cuts cascades without limit. After a split, the same run carries both tickets on: `run` re-enumerates Todo after every package's terminal handling, and `scripts/run/todo-verdict.py` names the next package or none — the code half first, the original once the code half is closed, as `attempt+1` inside the same three-session ceiling (`agent-ticket-orchestrator#86`/`#87`). The decision is a script and an opaque fact because `#82` tried it as a prose rule twice, and both attempts failed: a model's judgement of its own prose could not be graded.
 
 **Open edge, deliberately unsolved:** an MCP tool's user-facing description that lives inside a code file is `code` for this classifier.
 
