@@ -136,8 +136,11 @@ def run_guard(payload):
 
 
 def test_dirty_worktree_is_denied(world):
+    """A genuine modification to an already-tracked, already-pushed file --
+    distinct from test_untracked_file_is_denied's brand-new untracked file
+    below -- must also deny."""
     wt = world["wt"]
-    (wt / "modified.txt").write_text("uncommitted change\n", encoding="utf-8")
+    (wt / "file.txt").write_text("modified tracked content\n", encoding="utf-8")
 
     result = run_guard(payload_for(wt))
 

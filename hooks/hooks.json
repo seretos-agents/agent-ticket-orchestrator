@@ -1,0 +1,17 @@
+{
+  "description": "Deny mcp__plugin_agent-worktree_worktree__worktree_remove on a pkg/* checkout that is not clean and fully pushed to origin/<branch>, so run can never destroy a crashed session's unsalvaged work regardless of how its prose phrases the call (#84, mechanical backstop for #81's salvage-worktree.py). Fails closed with no Python 3 interpreter on PATH.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_agent-worktree_worktree__worktree_remove",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "for py in python3 python py; do \"$py\" -c \"import sys; sys.exit(sys.version_info[0] != 3)\" 2>/dev/null && exec \"$py\" \"${CLAUDE_PLUGIN_ROOT}/scripts/run/worktree-remove-guard.py\"; done; echo \"worktree-remove-guard: denied — no Python 3 interpreter (python3/python/py) on PATH\" >&2; exit 2",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

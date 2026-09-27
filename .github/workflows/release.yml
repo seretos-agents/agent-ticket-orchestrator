@@ -121,6 +121,11 @@ jobs:
           # from here. Always exists in this repo, so copied unconditionally
           # like agents/ and scripts/ above.
           mkdir -p "$STAGE/templates" && cp -a templates/. "$STAGE/templates/"
+          # hooks/ is a release artifact: hooks/hooks.json's PreToolUse entry
+          # is what mechanically blocks worktree_remove on unsalvaged pkg/*
+          # work (#84) -- without it, a client only gets the guard script,
+          # never wired up to fire.
+          mkdir -p "$STAGE/hooks" && cp -a hooks/. "$STAGE/hooks/"
           cp README.md "$STAGE/"
           cp LICENSE "$STAGE/" 2>/dev/null || true
           # assets/ goes onto the orphan release branch so the dispatch
