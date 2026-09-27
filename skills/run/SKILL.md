@@ -306,7 +306,8 @@ still_open = list_prs(project_id, status="open", head="pkg/<prev id>-<prev slug>
     Keep `base` here: without it a new branch is cut from whatever
     `<local_path>` has checked out.
 
-  Take `path` from the record, and keep its id for removal.
+  Take `path` from the record, and keep both its `id` and its `path` for
+  removal: step 2d passes the two together.
 
 **b. Start the package session — yourself, from this turn.** No subagent
 wraps the process: a task-notification for a backgrounded Bash command is
@@ -407,9 +408,9 @@ Then react to the latest event:
 
 | latest event | you do |
 |---|---|
-| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then **record the merge** (below), then **close the package ticket** (below), then `worktree_remove(environment_id=<id>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. Every other place in this skill that runs "the `ci-green` reaction" — Step 0, the 2a gate, the pre-retry CI check, the rebase retry — runs this whole row, the merge record included. |
+| `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then **record the merge** (below), then **close the package ticket** (below), then remove the worktree (step 2d): `worktree_remove(environment_id=<id>, checkout_path=<path>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. Every other place in this skill that runs "the `ci-green` reaction" — Step 0, the 2a gate, the pre-retry CI check, the rebase retry — runs this whole row, the merge record included. |
 | `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
-| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), followed by the block of `ato-event.py render --event escalated --package <package id> --reason failed <session>`, → **Question**, `worktree_remove`. |
+| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), followed by the block of `ato-event.py render --event escalated --package <package id> --reason failed <session>`, → **Question**, remove the worktree (step 2d, `worktree_remove`). |
 
 **Close the package ticket — only after a verified merge.** One call on the
 package ticket, the epic when the package is an epic:
@@ -486,7 +487,7 @@ So instead of setting the package aside:
       `ato-event.py render --event triage-answered --package <package id> <session>`.
       The `triage:split v1` block is what the gatekeeper reads; it ignores the `ato:event`
       block, which carries a different marker.
-   2. `worktree_remove(environment_id=<id>)`. Do not move the card — it stays in **Doing** — and
+   2. Remove the worktree (step 2d): `worktree_remove(environment_id=<id>, checkout_path=<path>)`. Do not move the card — it stays in **Doing** — and
       do not re-dispatch the package.
    3. Start exactly one gatekeeper split session, yourself, with `Bash(run_in_background: true)`:
 
@@ -517,7 +518,7 @@ So instead of setting the package aside:
    answerable from ticket, comments or code — see the blocked event above."* — followed by the
    block of
    `ato-event.py render --event escalated --package <package id> --reason blocked <session>`,
-   → **Question**, `worktree_remove`. Do not spend a retry session on a question triage already told you a retry
+   → **Question**, remove the worktree (step 2d, `worktree_remove`). Do not spend a retry session on a question triage already told you a retry
    cannot resolve.
 5. **Triage once per package per run.** Before dispatching triage, check whether this package's
    ticket already carries a `## Blocked triage (run)` comment from earlier in this run
@@ -547,12 +548,12 @@ not fetch a second time, classify from the error text. Then, in this order:
 
 | what you see | what it is | you do |
 |---|---|---|
-| already merged | already merged — a race, or a human merged it by hand | treat as a successful merge: record the merge (the `get_pr` above supplies `merge_commit_sha`), close the package ticket, `worktree_remove`. Note `merged externally` in the report. |
+| already merged | already merged — a race, or a human merged it by hand | treat as a successful merge: record the merge (the `get_pr` above supplies `merge_commit_sha`), close the package ticket, remove the worktree (step 2d, `worktree_remove`). Note `merged externally` in the report. |
 | conflict, or the merge error text names a conflict | **conflict** — the base moved | **the rebase retry** below. Not a Question. |
 | behind | base moved, no textual conflict, but the branch is not up to date | **the rebase retry** below — the session finds a clean rebase and goes straight to push + CI. |
-| gate open: CI, review or draft | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, move the card to **Question**, `worktree_remove`, record `merge-failed` in the report. A human decides. |
-| a permission error (`pulls.merge`, 403, "not permitted") | permission | `add_comment` with the exact error, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, move the card to **Question**, `worktree_remove`, record `merge-failed` (reachable only if the permission was revoked mid-run; Precondition 3 refuses the project otherwise). |
-| not computed yet, still after the second fetch, and the error text names nothing | unknown | `add_comment` carrying the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, **Question**, `worktree_remove`, `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
+| gate open: CI, review or draft | branch protection, a required review, a required check | `add_comment` with the exact error and the `mergeable_state`, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, move the card to **Question**, remove the worktree (step 2d, `worktree_remove`), record `merge-failed` in the report. A human decides. |
+| a permission error (`pulls.merge`, 403, "not permitted") | permission | `add_comment` with the exact error, followed by the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, move the card to **Question**, remove the worktree (step 2d, `worktree_remove`), record `merge-failed` (reachable only if the permission was revoked mid-run; Precondition 3 refuses the project otherwise). |
+| not computed yet, still after the second fetch, and the error text names nothing | unknown | `add_comment` carrying the block of `ato-event.py render --event escalated --package <package id> --reason merge-failed <session>`, **Question**, remove the worktree (step 2d, `worktree_remove`), `merge-failed (state unknown)`. Never guess a conflict from silence — a wrong guess costs a whole session. |
 
 A **conflict is mechanical** and belongs to this system. Everything else on
 this table is a decision or a configuration, and belongs to a human. See
@@ -595,8 +596,10 @@ and a conflict is a retry* below for why they do not share a counter).
    remove and re-create it. If it is genuinely gone (this `run` resumed after
    a crash), reuse the worktree left for that branch; only if there is none,
    `worktree_create(repo_root=<local_path>, branch="pkg/<id>-<slug>")` —
-   **omit `base`**, the branch already exists remotely. Finding it and its
-   id: the agent-worktree skill, "Identity and re-entry guarantees". Never
+   **omit `base`**, the branch already exists remotely. Finding it, its id
+   and its path: the agent-worktree skill, "Identity and re-entry
+   guarantees". Whichever worktree you end up with, its `id` and `path` are
+   now the ones step 2d removes. Never
    re-cut the branch from the default branch: that discards the package's
    commits.
 2. **Dispatch, exactly as in step 2b**, same script, `attempt+1`. No extra
@@ -609,13 +612,15 @@ and a conflict is a retry* below for why they do not share a counter).
    the same 45-minute rounds.
 3. **React to the new latest event.**
    - `ci-green` → back to the top of the `ci-green` row: `merge_pr(…, response="light")`, verify
-     `merged: true`, record the merge, close the package ticket, `worktree_remove`. Note `merged after
+     `merged: true`, record the merge, close the package ticket, remove the worktree (step 2d,
+     `worktree_remove`). Note `merged after
      rebase` in the report.
    - `ci-green` and the merge fails **again** → stop. `add_comment` naming
      both merge attempts, both `mergeable_state` values and both `RUNDIR`s,
      followed by the block of
      `ato-event.py render --event escalated --package <package id> --reason merge-conflict <session>`
-     → **Question**, `worktree_remove`, note `merge-conflict` in the report.
+     → **Question**, remove the worktree (step 2d, `worktree_remove`), note `merge-conflict` in
+     the report.
    - `blocked` → the resolution needs a product decision (two packages
      implemented incompatible behaviour) — the rebase retry's own single
      attempt is already spent, so this does not also draw on the triage
@@ -625,11 +630,11 @@ and a conflict is a retry* below for why they do not share a counter).
      resolution is a decision — see the blocked event above."* — followed by
      the block of
      `ato-event.py render --event escalated --package <package id> --reason rebase-decision <session>`
-     → **Question**, `worktree_remove`.
+     → **Question**, remove the worktree (step 2d, `worktree_remove`).
    - `failed`, or no terminal event → `add_comment` with the failure summary
      and both `RUNDIR`s, followed by the block of
      `ato-event.py render --event escalated --package <package id> --reason failed <session>`
-     → **Question**, `worktree_remove`. **Do not** spend
+     → **Question**, remove the worktree (step 2d, `worktree_remove`). **Do not** spend
      the `failed`-retry budget on a repair session — it already had its own
      budget, in step 2.
 
@@ -644,10 +649,40 @@ counts — that is why you always read `list_comments(order="desc", limit=3, bod
 the *first* `adev:event`, before every decision, including a triage-driven
 re-dispatch and every escalation.
 
-**d. Worktree removal.** Always `worktree_remove(environment_id=…)`; on a
-Windows directory lock follow the agent-worktree skill's recipe for it; if it
-still fails, record the path under *manual cleanup* in the report and
-continue. A stuck worktree never blocks the next package.
+**d. Worktree removal.** Every place in this skill that removes a package's
+worktree makes this one call:
+
+```
+worktree_remove(environment_id=<id>, checkout_path=<path>)
+```
+
+Both values come from the **same** worktree record of this package — the
+tool rejects an id and a path that do not name the same worktree. That
+record is the one step 2a created or reused, or the one the rebase retry
+re-created. When this run created none — a Step 0 carried-over PR, or a
+package this run re-entered after a crash — it is the worktree entry for
+`pkg/<id>-<slug>`, found as in step 2a (the agent-worktree skill, "Identity
+and re-entry guarantees"); no entry means there is nothing to remove. Never
+call `worktree_remove` with only one of the two: a call without
+`checkout_path` is refused.
+
+Then read the result:
+
+- **Removed** → continue.
+- **A Windows directory lock** → follow the agent-worktree skill's recipe for
+  it; its retry passes both arguments too. If it still fails, record
+  `manual cleanup: <path>` and continue.
+- **Refused with a message that starts `worktree-remove-guard: denied`** →
+  the guard could not confirm that the checkout is clean and fully pushed —
+  typically it holds uncommitted changes or commits not on
+  `origin/<branch>`. This is not a lock, and the refusal is doing its job: it
+  keeps a crashed session's unpushed work from being deleted. Do **not**
+  retry it with `force`, without `checkout_path`, or with
+  `kill_blocking_processes` — even though the agent-worktree skill calls
+  `force=True` routine teardown, that does not apply to `run`. Record
+  `manual cleanup: <path>` and continue.
+
+A worktree that could not be removed never blocks the next package.
 
 ### 3. Final report
 
