@@ -1,7 +1,7 @@
 ---
 name: run
 disable-model-invocation: true
-description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then orders every open package in the board's Todo column by its blocked_by relations (a blocker also in Todo is processed first; a package whose blocker is still open elsewhere is skipped, left untouched in Todo, and reported), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry; branch protection, a missing permission, and an unresolved mergeability state comment on the ticket and escalate to Question; a project without pulls.merge is refused up front, before anything is touched. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
+description: Unattended night-shift runner — before enumerating, finishes any CI-green PR an earlier run left unmerged; then orders every open package in the board's Todo column by its blocked_by relations (a blocker also in Todo is processed first; a package whose blocker is still open elsewhere is skipped, left untouched in Todo, and reported), gives each its own worktree, hands it to agent-autonomous-developer in a separate claude -p process started from this skill's own turn, and merges the CI-green PR. A merge conflict gets one rebase-and-retry round (mechanical, absorbed here) before it escalates; a package that only died mid-CI-wait is checked directly (get_pr/list_pipeline_runs) before its retry is spent, never escalated for waiting alone; a blocked event, and a package that failed again with real findings after its retry, is triaged (a read-only subagent tries to answer it from ticket and code) before it costs a retry or a Question; branch protection, a missing permission, and an unresolved mergeability state comment on the ticket and escalate to Question; a project without pulls.merge is refused up front, before anything is touched. Sequential, no human in the loop, may run for hours. Installed per project; invoke as "/agent-ticket-orchestrator:run" from the project's main checkout (project_id=<id> overrides the repo-derived id).
 ---
 
 # run — process every Todo package to a merged, CI-green PR
@@ -428,8 +428,8 @@ list_comments(project_id, ticket_id=<package>, order="desc", limit=3, body_max_c
 and take the **first** comment whose body contains `<!-- adev:event`. If none
 of the three carries it, repeat the call once with `limit=10` (same
 `body_max_chars`); only if that also has none is it "no terminal event". When
-the full text of a `blocked`/`failed` event is needed for a Question comment,
-fetch exactly that one comment with
+the full text of a `blocked`/`failed` event is needed for a Question comment
+or for triage, fetch exactly that one comment with
 `get_comment(project_id, comment_id=<its id>, ticket_id=<package>)`. Parse
 the block as dumb `key: value` lines (`event`, `package`, `attempt`,
 `rounds`, `pr`, `ci_run`; empty = unknown; unknown keys ignored).
@@ -470,8 +470,8 @@ Then react to the latest event:
 | latest event | you do |
 |---|---|
 | `ci-green` | `merge_pr(project_id, pr_id=<pr>, response="light")`, no `merge_method`. Children of an epic close through `Closes #<n>` in the PR body — you do not close them. **Verify `pull_request.merged == true` in the response** before treating it as merged. Then **record the merge** (below), then **close the package ticket** (below), then remove the worktree (step 2d): `worktree_remove(environment_id=<id>, checkout_path=<path>)`. If the call errors or returns `merged: false`: **classify before reacting** — see *When the merge fails* below. Every other place in this skill that runs "the `ci-green` reaction" — Step 0, the 2a gate, the pre-retry CI check, the rebase retry — runs this whole row, the merge record included. |
-| `blocked` | Triage before you retry or escalate — see *Blocked events are triaged before they cost a retry* below. |
-| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending the retry. Only when that check does not resolve it: **one** fresh start (step b, same script) with `attempt+1`, same worktree. If that ends `ci-green` → handle as above. If still `failed`/none → `add_comment` summarising both attempts (event, `rounds` with the findings-vs-infra split, `pr`, both `RUNDIR`s), followed by the block of `ato-event.py render --event escalated --package <package id> --reason failed <session>`, → **Question**, remove the worktree (step 2d, `worktree_remove`). |
+| `blocked` | Triage before you retry or escalate — see *Blocked and failed events are triaged before they cost a retry* below. |
+| `failed`, or no terminal event (non-zero exit, or the latest event is a non-terminal one like `pr-opened`/`ci-red`/`review-verdict` — the process died mid-pipeline) | **First**, if a PR already exists for this package, run *The pre-retry CI check* below — it can resolve the package (straight to the `ci-green` reaction) without spending anything. Only when that check does not resolve it: run *The failed verdict* below and do exactly what its `verdict:` line says — retry, triage, or Question. |
 
 **Close the package ticket — only after a verified merge.** One call on the
 package ticket, the epic when the package is an epic:
@@ -513,26 +513,33 @@ inside its own process. If the latest event after the process ended is
 `pr-opened` or `ci-red`, the process died mid-CI-loop: that is the "none"
 row above.
 
-**Blocked events are triaged before they cost a retry.** A `blocked` event means the lower plugin
-genuinely could not decide something — but "genuinely could not decide" and "a retry would change
-nothing" are not the same fact, and the old unconditional path (set aside, one full retry session
-at the end of the run, no matter what) spent a whole session on cases that told us in their own
-text that a retry was pointless. Incident, `agent-project-issues` package #265
+**Blocked and failed events are triaged before they cost a retry.** A `blocked` event means the
+lower plugin genuinely could not decide something — but "genuinely could not decide" and "a retry
+would change nothing" are not the same fact, and the old unconditional path (set aside, one full
+retry session at the end of the run, no matter what) spent a whole session on cases that told us
+in their own text that a retry was pointless. Incident, `agent-project-issues` package #265
 (`agent-ticket-orchestrator#7`): the `blocked` event's own text predicted a Codex re-review would
 "very likely just exhaust the cap without new information" — a human who happened to be watching
-answered it from the ticket comment alone, no retry session needed.
+answered it from the ticket comment alone, no retry session needed. A `failed` event after the
+retry can be the same thing: its summary names the finding that kept recurring and the fixes it
+could have taken, and the ticket settles which one.
 
-So instead of setting the package aside:
+This procedure runs for **a `blocked` event, or a `failed` event whose failed verdict is
+`triage`** (see *The failed verdict* below). Below, *the event* is the one it runs for:
 
-1. Dispatch the **triage** subagent (fresh, unnamed, synchronous) with the `blocked` event's
-   question, options, recommendation, what was already checked and its `attempt:` value, plus
-   `project_id`, `package`, `local_path` and `lane=<code|prose>` (`prose` when the package
-   carries `lane:prose`). It reads ticket, comments, siblings and code — the same test the `clarifier`
-   already applies to Backlog questions — and ends `STATUS: ANSWERED` (a chosen option plus
-   reasoning) or `STATUS: ESCALATE` (why it is not answerable from context).
+1. Dispatch the **triage** subagent (fresh, unnamed, synchronous) with the event's full text
+   verbatim — the one comment fetched with `get_comment` as described at the top of 2c — and its
+   `event:` value (`blocked` or `failed`) and `attempt:` value, plus `project_id`, `package`,
+   `local_path` and `lane=<code|prose>` (`prose` when the package carries `lane:prose`). For a
+   `blocked` event that text is the question, options, recommendation and what was already
+   checked; for a `failed` event it is the failure summary, which triage reads as the question.
+   It reads ticket, comments, siblings and code — the same test the `clarifier` already applies
+   to Backlog questions — and ends `STATUS: ANSWERED` (a chosen option plus reasoning) or
+   `STATUS: ESCALATE` (why it is not answerable from context).
 2. **`ANSWERED`, and the answer carries no `<!-- triage:split v1` block** →
    `add_comment(project_id, ticket_id=<package>, body=…)` with heading
-   `## Blocked triage (run)`, the question, the chosen option, and the reasoning, followed by
+   `## Blocked triage (run)` (the same heading for a `failed` event — it is the triage-once
+   record for both), the question, the chosen option, and the reasoning, followed by
    the block of
    `ato-event.py render --event triage-answered --package <package id> <session>`
    — then immediately re-dispatch (step 2b, same script, `attempt+1`, same worktree). The lower plugin's
@@ -540,7 +547,8 @@ So instead of setting the package aside:
    no change to its contract. Do **not** wait for every other Todo package to have its turn first —
    the whole point is that nothing about this answer changes by waiting.
 3. **`ANSWERED`, and the answer carries a `<!-- triage:split v1 … -->` block** → the prose lane
-   found requirements it may not build, and the answer is to split them into a code ticket. A
+   found requirements it may not build, and the answer is to split them into a code ticket. Only
+   a `blocked` event reaches this item; triage writes the block for no `failed` event. A
    re-dispatch would hit the same wall, so the split replaces it:
    1. `add_comment(project_id, ticket_id=<package>, body=…)` with heading
       `## Blocked triage (run)`, the question, the chosen option, the reasoning, and the
@@ -576,21 +584,30 @@ So instead of setting the package aside:
       `ato-event.py render --event escalated --package <package id> --reason split-failed <session>`,
       → **Question**, note `split-failed`. The `triage:split v1` block stays on the ticket, so the next gatekeeper pass a human starts
       finds the card and applies the split into Planned.
-4. **`ESCALATE`** → `add_comment` with the original question plus one line — *"Escalated: not
-   answerable from ticket, comments or code — see the blocked event above."* — followed by the
-   block of
-   `ato-event.py render --event escalated --package <package id> --reason blocked <session>`,
-   → **Question**, remove the worktree (step 2d, `worktree_remove`). Do not spend a retry session on a question triage already told you a retry
-   cannot resolve.
-5. **Triage once per package per run.** Before dispatching triage, check whether this package's
-   ticket already carries a `## Blocked triage (run)` comment from earlier in this run
+4. **`ESCALATE`** →
+   - on a `blocked` event: `add_comment` with the original question plus one line —
+     *"Escalated: not answerable from ticket, comments or code — see the blocked event above."* —
+     followed by the block of
+     `ato-event.py render --event escalated --package <package id> --reason blocked <session>`,
+     → **Question**, remove the worktree (step 2d, `worktree_remove`).
+   - on a `failed` event: the `escalate` reaction of *The failed verdict* below — its comment,
+     its `--reason failed` block, **Question**, worktree removal — with triage's reason as one
+     more line of that comment.
+
+   Do not spend a retry session on a question triage already told you a retry cannot resolve.
+5. **Triage once per package per run.** Before dispatching triage for a `blocked` event, check
+   whether this package's ticket already carries a `## Blocked triage (run)` comment from earlier
+   in this run
    (`list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)`,
    search for the heading). If it does, a second `blocked` event goes straight to
    the `ESCALATE` reaction above, with its block rendered by
    `ato-event.py render --event escalated --package <package id> --reason triage-reblocked <session>`
    in place of the `--reason blocked` one — a triage-answered redispatch that blocks again means the answer
    did not hold or a materially different question surfaced, and either way a second guess is not
-   this system's to make alone. The split session of item 3 inherits this bound: it takes the
+   this system's to make alone. For a `failed` event the same scan has already been made: it is
+   the failed verdict's `triage_spent` field, and the script answers `escalate` when that field is
+   `true`, so a `failed` event never reaches triage twice. The bound is shared — a triage spent on
+   either event kind spends it for both. The split session of item 3 inherits this bound: it takes the
    place of the triage-driven re-dispatch, so a package gets at most one of the two per run.
 
 This replaces the old two-stage design entirely: there is no more "second pass at the end of the
@@ -628,7 +645,7 @@ the session ended before it read the result. Two independent incidents escalated
 exactly this (`agent-ticket-orchestrator#8`): `agent-worktree` package #165 (one CI run green,
 the other still executing when the session exited) and `agent-project-issues` package #268 (**both**
 gating runs had already completed successfully before the session exited — there was nothing left
-to wait for, let alone decide). Before spending the `failed`/no-terminal-event retry:
+to wait for, let alone decide). Before running *The failed verdict* below:
 
 1. If the latest event carries a `pr:` value, or `list_prs(project_id, head="pkg/<id>-<slug>",
    status="open", limit=5)` finds one, call `get_pr(project_id, pr_id=<pr>)` once and
@@ -640,17 +657,60 @@ to wait for, let alone decide). Before spending the `failed`/no-terminal-event r
    **without spending the retry**.
 3. **At least one run has not finished** → the package is only waiting.
    `Bash("sleep 60")` once and re-check — the same one-more-look pattern the merge classification
-   above already uses, never a third check here either. Still not finished → *now* the ordinary
-   retry applies (step b, `attempt+1`); this is one extra look, not an unbounded wait, and it does
+   above already uses, never a third check here either. Still not finished → *now* the failed
+   verdict decides; this is one extra look, not an unbounded wait, and it does
    not conflict with *Waiting rule* below (that rule is about never polling CI in place of the
    lower plugin's own Phase 6 loop — this is a single, bounded recheck of a process that has
    already ended, not a wait *inside* a running process).
-4. **A run failed** → this is a genuine `failed`; the ordinary retry applies unchanged.
-5. **No PR exists yet for this package** → nothing to check; the ordinary retry applies unchanged.
+4. **A run failed** → this is a genuine `failed`; the failed verdict decides.
+5. **No PR exists yet for this package** → nothing to check; the failed verdict decides.
+
+**The failed verdict — a script decides retry, triage or Question.** Whether a `failed`/no-terminal
+ending gets its one retry, goes to triage, or goes to Question is decided by a script, never by
+you. Build its input from the ticket and from what you know of this run, one field each:
+
+- `failures` — how many of this package's sessions in this run ended `failed` or with no terminal
+  event, this one included (an integer ≥ 1).
+- `terminal` — `"failed"` when the latest `adev:event` is `failed`, otherwise `"none"`.
+- `rounds` — the latest `adev:event`'s `rounds:` value, verbatim, as a string; `""` when it has
+  none.
+- `triage_spent` — `true` when the heading scan
+  `list_comments(project_id, ticket_id=<package>, order="desc", limit=20, body_max_chars=200)`
+  finds a `## Blocked triage (run)` comment posted in this run, otherwise `false`.
+- `sessions` — how many package sessions this package has had in this run, this one included
+  (the rebase retry and every `attempt+1` count; the gatekeeper split session does not).
+
+Pipe the one JSON object to the script:
+
+```
+{"failures": <n>, "terminal": "failed|none", "rounds": "<rounds verbatim>", "triage_spent": <true|false>, "sessions": <n>}
+```
+
+```
+python "${CLAUDE_PLUGIN_ROOT}/scripts/run/failed-verdict.py"
+```
+
+It prints `verdict:` and `reason:` lines. Act on `verdict:` alone; the order in which the script
+weighs its inputs is the script's, not yours to re-derive:
+
+- **`verdict: retry`** → **one** fresh start (step b, same script) with `attempt+1`, same
+  worktree. When it ends, react to its latest event from the top of 2c.
+- **`verdict: triage`** → run *Blocked and failed events are triaged before they cost a retry*
+  (above) with this `failed` event as the event. Its `ANSWERED` re-dispatches `attempt+1`; its
+  `ESCALATE` is the `escalate` reaction just below.
+- **`verdict: escalate`** → `add_comment` summarising this run's attempts of the package (event,
+  `rounds` with the findings-vs-infra split, `pr`, every `RUNDIR`) and the script's `reason:`
+  line, followed by the block of
+  `ato-event.py render --event escalated --package <package id> --reason failed <session>`,
+  → **Question**, remove the worktree (step 2d, `worktree_remove`).
+- **Exit 1** (an `error: …` line, no `verdict:` line) → there is no verdict. Take the `escalate`
+  reaction, with the `error:` line in the comment in place of the `reason:` line. Never work out
+  a verdict yourself instead.
 
 **The rebase retry.** One attempt, once per package per run — a budget
 independent of the `failed`-retry budget above and the triage-driven
-re-dispatch a `blocked` event can trigger (see *Merge outcomes are classified,
+re-dispatch a `blocked` event, or a `failed` event the failed verdict sends to
+triage, can trigger (see *Merge outcomes are classified,
 and a conflict is a retry* below for why they do not share a counter).
 
 1. **Reuse the worktree.** You have not removed it yet at this point in 2c,
@@ -697,8 +757,8 @@ and a conflict is a retry* below for why they do not share a counter).
      and both `RUNDIR`s, followed by the block of
      `ato-event.py render --event escalated --package <package id> --reason failed <session>`
      → **Question**, remove the worktree (step 2d, `worktree_remove`). **Do not** spend
-     the `failed`-retry budget on a repair session — it already had its own
-     budget, in step 2.
+     the `failed`-retry budget on a repair session, and do not run the failed
+     verdict for it — it already had its own budget, in step 2.
 
 **`ci-green` outranks everything.** Before moving any card to **Question**
 for any reason, re-read its latest `adev:event`. If it is `ci-green`, the
@@ -751,8 +811,8 @@ A worktree that could not be removed never blocks the next package.
 One table: `package · result (Done / Question / Skipped) · note · PR
 · rounds (from the last event's `rounds`) · attempts`. `Done` in the result
 column means the PR merged and the package ticket is closed — a result, not a
-column. A package the gatekeeper split session split (2c, *Blocked events are
-triaged*) carries the note `split: code half #<n>`, and its result is the one
+column. A package the gatekeeper split session split (2c, *Blocked and failed
+events are triaged*) carries the note `split: code half #<n>`, and its result is the one
 its later dispatch in this run reached (Done or Question); it is `Skipped`
 only when no later verdict of this run named it again. The code half gets a
 row of its own like any other package. `note` is empty for a
@@ -880,10 +940,11 @@ Three changes close that hole, all documented at their point of use above:
 **Independent retry budgets, not a shared counter:** one `failed`/
 no-terminal-event retry (2c, now preceded by the pre-retry CI check, which
 does not itself spend the budget), one rebase retry (the conflict path), and
-one triage-driven re-dispatch when a `blocked` event turns out to be
-`ANSWERED` — or, when that answer carries a `triage:split v1` block, one
-gatekeeper split session in its place (also 2c — see *Blocked events are
-triaged before they cost a retry*, above). A package can legitimately reach `attempt=3` — failed once,
+one triage-driven re-dispatch when a `blocked` event, or a findings `failed`
+after the retry, turns out to be `ANSWERED` — or, when that answer carries a
+`triage:split v1` block, one gatekeeper split session in its place (also 2c —
+see *Blocked and failed events are triaged before they cost a retry*, above;
+`failed-verdict.py` applies the ceiling and triage-once to a `failed` ending). A package can legitimately reach `attempt=3` — failed once,
 `ci-green` on the second try, conflicted and rebased on the third — and
 `attempt` stays a monotonically increasing session counter across all of it,
 exactly as it already was. **Hard ceiling: at most three package sessions per
