@@ -37,7 +37,7 @@ pr: <number or empty>   ci_run: <id or empty>
 
 `rounds`: `<gate>=<used>/<cap>(<f>f,<i>i)` — `f` rounds ended with real findings, `i` rounds were lost to infrastructure; both count toward the cap. As of the lower plugin's Phase R (rebase-and-repair), `rounds` also carries a `rebase=<u>/3(<f>f,<i>i)` sub-field, `0/3` on a session that never entered Phase R; `run` reads `rounds` as opaque prose and does not need to parse it. A separate `generation: <g>/2` field (2026-08-25) tracks the lower plugin's own replan mechanism — `1/2` unless a plan-critic/test-critic/review gate stagnated and triggered a fresh planner dispatch; `run` also reads this as opaque prose, purely informational. Events, exhaustive: `started`, `plan-committed`, `plan-critic-verdict`, `tests-red`, `test-critic-verdict`, `tests-green` (local pre-filter only — never success), `review-verdict`, `pr-opened`, `ci-red` (`ci_run` filled), `replan-triggered` (non-terminal — the lower plugin's own turn continues after it, see its `AGENTS.md`, "Round caps are progress-based, not just round-counted"), and the three **terminal** ones: `ci-green` (the only success signal), `blocked` (needs a human decision; text = question, options, recommendation, what was checked), `failed` (terminal non-decision failure; text distinguishes findings vs infra). A process that ended without a terminal event counts as `failed` (`replan-triggered` included — a process that dies mid-replan is exactly as unfinished as one that dies mid-review). The vocabulary is unchanged by Phase R — see the lower plugin's `AGENTS.md`, "Phase 0 orients on the branch instead of taking a parameter".
 
-Reactions (`skills/run/SKILL.md` implements exactly this): `ci-green` → `merge_pr` (verify `merged: true`), close the package ticket, remove worktree · merge fails on a **conflict** (`mergeable_state: dirty`/`behind` or the GitLab equivalent) → one rebase-and-retry dispatch, same script, `attempt+1`; merges after that → close the package ticket, still conflicted → Question · merge fails on branch protection / permission / an unresolved state → `add_comment` with the exact error, Question, `merge-failed`, human decides · `blocked` → triaged by a read-only subagent before it costs anything (answerable → answer posted, immediate re-dispatch; a prose-lane split request → answer with its `triage:split v1` block posted, one gatekeeper split session instead of the re-dispatch; not answerable → Question right away) · `failed`/no terminal event → checked directly against the PR's actual CI/mergeability state first (a package that only died mid-CI-wait is not `failed`); only if that check does not resolve it, one fresh re-dispatch, still failed → Question with the failure summary. These are **independent** retry budgets (one `failed` retry, one rebase retry, one triage-driven re-dispatch or, in its place, one gatekeeper split session), not a shared counter — see `skills/run/SKILL.md`, "Merge outcomes are classified, and a conflict is a retry". The run succeeds only if every package reached Done (merged and closed); partial is reported as partial; no "not included" list in any PR, ever.
+Reactions (`skills/run/SKILL.md` implements exactly this): `ci-green` → `merge_pr` (verify `merged: true`), close the package ticket, remove worktree · merge fails on a **conflict** (`mergeable_state: dirty`/`behind` or the GitLab equivalent) → one rebase-and-retry dispatch, same script, `attempt+1`; merges after that → close the package ticket, still conflicted → Question · merge fails on branch protection / permission / an unresolved state → `add_comment` with the exact error, Question, `merge-failed`, human decides · `blocked` → triaged by a read-only subagent before it costs anything (answerable → answer posted, immediate re-dispatch; a prose-lane split request → answer with its `triage:split v1` block posted, one gatekeeper split session instead of the re-dispatch; not answerable → Question right away) · `failed`/no terminal event → checked directly against the PR's actual CI/mergeability state first (a package that only died mid-CI-wait is not `failed`); only if that check does not resolve it, the `scripts/run/failed-verdict.py` verdict decides: retry (one fresh re-dispatch), triage (a findings `failed` after the retry; triage-once, shared with `blocked`), or Question with the failure summary. These are **independent** retry budgets (one `failed` retry, one rebase retry, one triage-driven re-dispatch or, in its place, one gatekeeper split session), not a shared counter — see `skills/run/SKILL.md`, "Merge outcomes are classified, and a conflict is a retry". The run succeeds only if every package reached Done (merged and closed); partial is reported as partial; no "not included" list in any PR, ever.
 
 **The reverse direction: `run` writes `ato:event v1` (`agent-ticket-orchestrator#63`/`#67`).** Every comment `run` posts before a move to Question, every `## Blocked triage (run)` comment whose triage ended `ANSWERED`, and one comment after every merge it treats as successful (the `Merged PR #<pr>` record, `merged externally` included) carry a `<!-- ato:event v1 -->` block after their human text, with events `escalated | triage-answered | merged`, a `reason` on every escalation, and `pr`/`merge_sha` on a merge. `scripts/run/ato-event.py` owns the vocabulary and is the only thing that renders the block; `skills/run/SKILL.md` names the exact call at each site. External tooling (ecosystem-statistics#11) reads it with the same dumb `key: value` reader as `adev:event`. The human lines around it — `Escalated: …` and the rest — are **not** an interface: reword them freely, but never drop or rename an event or reason without changing the script and every reader.
 
@@ -47,8 +47,8 @@ Reactions (`skills/run/SKILL.md` implements exactly this): `ci-green` → `merge
 
 ### Waiting on CI is not a decision, and neither is a `blocked` event nobody tried to answer
 
-Two follow-on fixes to the same escalation philosophy, both in `skills/run/SKILL.md` at their
-point of use (`agent-ticket-orchestrator#7`, `#8`):
+Three follow-on fixes to the same escalation philosophy, all in `skills/run/SKILL.md` at their
+point of use (`agent-ticket-orchestrator#7`, `#8`, `#92`):
 
 - **The pre-retry CI check.** A process that ends `failed` or on a non-terminal event can simply
   have died while its PR's gating CI was still running, or even after it had already finished
@@ -66,6 +66,23 @@ point of use (`agent-ticket-orchestrator#7`, `#8`):
   the question against ticket, code and comments: `ANSWERED` → the answer is posted as a comment
   and the package is re-dispatched immediately (no waiting for other packages first); `ESCALATE` →
   straight to Question, no retry spent. At most one triage attempt per package per run.
+- **A findings `failed` after the retry is triaged too.** `seretos-games/unity-interaction`
+  package #61 ended `failed` on both attempts, both with real findings and no infrastructure loss,
+  and `run` escalated it straight to Question: `triage` only ever saw `blocked`. The second
+  `failed` text named the recurring finding and the levers that could clear it, and the ticket's
+  own acceptance criterion settled which one — a human answered by hand what triage could have
+  (`agent-ticket-orchestrator#92`). `scripts/run/failed-verdict.py` (`#93`, code half) now decides
+  a `failed`/no-terminal ending after the pre-retry CI check: `retry`, `triage` (the same
+  procedure and the same `## Blocked triage (run)` triage-once record as `blocked`) or
+  `escalate`. The decision is a script, as for `todo-verdict.py`, because the session ceiling,
+  triage-once and the findings-vs-infra split are counts, not judgement. `triage` reads a `failed`
+  summary as its question, and answers "may this test change?" by mapping the test to the
+  acceptance criterion it verifies: the behavioural assertion stays, its mechanism may change.
+  The lower plugin only promises that a `failed` text separates findings from infrastructure, so
+  a thin summary gives triage nothing to answer and it escalates — the old outcome, not a
+  regression. Known gap: implement-phase findings are not recorded in `rounds`, so a `failed`
+  whose findings all came from the implement phase reads as infra-only and escalates; that is a
+  code-lane fix (the script or the lower plugin's `rounds`), not prose.
 
 ### Dependencies are relations, and "done" is a closed ticket
 
