@@ -1,7 +1,7 @@
 ---
 name: gatekeeper
 disable-model-invocation: true
-description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned. A pass a human starts never moves anything to Todo; the one pass that does is the split session `run` starts (single_ticket=<id> advance_to_todo=true) when a dispatched prose-lane ticket turns out to need code: it files the code half as its own ticket, blocks the original on it, and moves both to Todo. Never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
+description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned, and so does one it parked for a missing prose lane once that plugin is enabled, no reply needed. A pass a human starts never moves anything to Todo; the one pass that does is the split session `run` starts (single_ticket=<id> advance_to_todo=true) when a dispatched prose-lane ticket turns out to need code: it files the code half as its own ticket, blocks the original on it, and moves both to Todo. Never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
 ---
 
 # gatekeeper — bundle, clarify, release to Planned
@@ -156,7 +156,7 @@ furthest along in, so it never counts as moving a card into Todo, and doing
 it on a Question card `run` owns is not touching that card in the sense of
 the Hard rules — its state is the same afterwards, only no longer ambiguous.
 
-## Step 1 — enumerate the Backlog, and your own answered Question cards
+## Step 1 — enumerate the Backlog, and your own Question cards that now have an answer
 
 **An unapplied split block** is how a prose-lane ticket asks for a
 mid-development split: after dispatch the prose lane found requirements it
@@ -232,11 +232,25 @@ bundler may fold further tickets into them or leave them as-is.
    this pass is what it waits for);
 3. at least one comment is **newer** than your latest clarification comment —
    somebody answered. A card with your question and nothing after it is still
-   waiting; skip it silently, nothing changed. One exception, for the second
-   card of an oversized pair (Step 2): when your latest clarification comment
-   carries a `gatekeeper:oversized` block whose `proposal_on:` names another
-   ticket, the owner answers *there* — apply this test to that ticket's
-   comments instead, so both cards of the pair return in the same pass.
+   waiting; skip it silently, nothing changed. Two exceptions:
+   - **The second card of an oversized pair** (Step 2): when your latest
+     clarification comment carries a `gatekeeper:oversized` block whose
+     `proposal_on:` names another ticket, the owner answers *there* — apply
+     this test to that ticket's comments instead, so both cards of the pair
+     return in the same pass.
+   - **A missing-prose-lane question** (Step 2): when your latest
+     clarification comment carries a `<!-- gatekeeper:prose-lane v1` block
+     (it sits directly under the heading, so the 200-character scan above
+     shows it) and no comment is newer than it, the question is answered by
+     the project's settings, not by a reply. Run `prose-lane-available.py`
+     (the call in Step 2, *The prose lane is optional*) — once per pass: the
+     first time you meet such a card; reuse that verdict for every other such
+     card and for Step 2. `prose_lane: available` → signal 3 holds and the
+     card joins the candidate list. `prose_lane: unavailable` → leave the card
+     in Question, post nothing, and record
+     `prose lane not installed: #<id> still waiting` for Step 5. A card with
+     this block **and** a newer comment needs no script here: signal 3 already
+     holds, and Step 2 reads the reply.
 
 **A Question card carrying an unapplied split block is yours too**, although
 it carries an `adev:event` comment and signals 1–3 do not apply to it: `run`
@@ -251,7 +265,8 @@ are re-bundled and re-clarified the same way, and on `CLEAR` they move
 Question → Planned (Step 4). Cards that fail 2 or 3 and carry no unapplied
 split block are left exactly where
 they are and are not mentioned in the report except by count ("<n> Question
-cards still waiting, <m> belong to run").
+cards still waiting, <m> belong to run") — and, for a missing-prose-lane
+card the script still reports unavailable, its `still waiting` line.
 
 0 candidates → report "Backlog is empty / fully packaged, no answered
 Question cards" — plus the `ignored` line and any `repaired` /
@@ -373,7 +388,8 @@ other half out.)
 developer is needed in every project, the prompt engineer only where
 model-executed prose is actually shipped. So before any ticket is routed to
 it, check — **once per pass, and only when at least one ticket came back
-`prose` or `mixed`**:
+`prose` or `mixed`**. When Step 1 already ran the script for a
+missing-prose-lane card this pass, use that verdict and do not run it again:
 
 ```
 python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/prose-lane-available.py" "<local_path>"
@@ -394,6 +410,10 @@ are known to deadlock on it. For each such ticket — no split, no
 ```
 ## Clarification needed (gatekeeper)
 
+<!-- gatekeeper:prose-lane v1
+lane: <the classifier's lane for this ticket: prose | mixed>
+-->
+
 ### Q1
 **About:** this ticket changes files a model executes (skills, agents,
 prompts), and this project does not have the plugin that builds and verifies
@@ -401,24 +421,34 @@ those.
 
 <the classifier's output, verbatim>
 
-- **Enable `agent-autonomous-prompt-engineer` in this project's
-  `.claude/settings.json`, then reply here** *(recommended)* — the ticket is
-  routed (and, when it also changes code, split) on the next pass.
+- **Enable `agent-autonomous-prompt-engineer` in this project's committed
+  `.claude/settings.json`** *(recommended)* — no reply needed: the next
+  gatekeeper pass sees the enabled plugin and routes the ticket (and, when it
+  also changes code, splits it).
 - **Reply "code lane"** — the ticket runs through `agent-autonomous-developer`
   as it is, unsplit; expect its test gates to object to prose and the package
   to possibly come back as a Question.
 ```
 
-and move it to Question (Step 3's calls). A bundle containing such a ticket
-is rejected first, as below, so the other members are not held up.
+and move it to Question (Step 3's calls). The `gatekeeper:prose-lane` block
+goes directly under the heading, before `### Q1`, because Step 1 finds it in
+a 200-character heading scan; it is read with the same dumb `key: value`
+reader as `adev:event`. A bundle containing such a ticket is rejected first,
+as below, so the other members are not held up.
 
-**When such a card returns answered:** run the script again. Available →
-the ticket is handled as if the question had never been asked. Still
-unavailable and a reply after your question says `code lane` → its lane is
-`code` for this and every later pass (the reply is the record; no label, no
-split), reported as `lane forced to code by reply: #<id>`. Still unavailable
-and no such reply → leave the card in Question, post nothing, and report
-`prose lane not installed: #<id> still waiting`.
+**When such a card returns:** it comes back one of two ways.
+
+- **Through Step 1's missing-prose-lane exception** (no comment after your
+  question): the script reported available, so the ticket is handled as if
+  the question had never been asked.
+- **Through a reply** (a comment newer than your question): run the script
+  — or reuse this pass's verdict. Available → the ticket is handled as if the
+  question had never been asked. Still unavailable and a reply after your
+  question says `code lane` → its lane is `code` for this and every later
+  pass (the reply is the record; no label, no split), reported as
+  `lane forced to code by reply: #<id>`. Still unavailable and no reply says
+  `code lane` → leave the card in Question, post nothing, and report
+  `prose lane not installed: #<id> still waiting`.
 
 ### A bundle never spans lanes
 
@@ -751,8 +781,10 @@ Each result ends with a status line:
 
   A **repeat pass** (this package came in through Step 1's Question branch —
   it already carries an earlier `## Clarification needed (gatekeeper)`
-  comment and the human has since replied to it) re-dispatches the
-  `clarifier` exactly as above; it reads the reply itself. If it comes back
+  comment, and either the human has since replied to it or it came back
+  through Step 1's missing-prose-lane exception without a reply)
+  re-dispatches the `clarifier` exactly as above; it reads any reply
+  itself. If it comes back
   `NEEDS_INPUT` again, the new questions are posted and the card simply
   stays in Question — nothing to move. Count the `## Clarification needed (gatekeeper)`
   comments on the ticket (`list_comments`); at **4 or more**, add one line to
@@ -1166,8 +1198,9 @@ This is the same call whether the package came from Backlog, from your own
 answered Question card (Step 1), or — the original of a mid-development
 split — from Doing or Question. Question → Planned is the one move out of
 Question a skill makes, and only for a card the gatekeeper itself put there
-and a human has since replied on, or a card carrying an unapplied split
-block (Step 1). `run`'s other Question cards are never moved or
+and a human has since replied on, or whose missing-prose-lane question
+`prose-lane-available.py` now answers (Step 1), or a card carrying an
+unapplied split block (Step 1). `run`'s other Question cards are never moved or
 commented on; Step 3.5's reverse-edge relation is the one write they receive.
 
 Then leave the release confirmation, always, once the move above has succeeded — the comment asserts a move that happened, so a failed move leaves nothing behind. Write the column the package left on the `Moved:` line in place of `Backlog`: `Question` for a card reclaimed from Question, `Doing` for the original of a split pass; the body has no other variable part:
@@ -1251,7 +1284,8 @@ the dependent `#<d>` (Step 3.5);
 `advance skipped: …` (Step 4a),
 `bundle rejected (spans lanes): …`, `lane undecided: #<id> — …`,
 `prose lane not installed: #<ids> → Question`, `lane forced to code by reply:
-#<id>` and `prose lane not installed: #<id> still waiting` (Step 2);
+#<id>` (Step 2) and `prose lane not installed: #<id> still waiting` (Step 1
+or Step 2);
 `repaired: #<id> kept <label>, removed <labels>` (plus `, closed` when the
 verdict carried `close: yes`) and `repair skipped: #<id> — <error>` (Step 0).
 
@@ -1289,7 +1323,9 @@ are all in the Question column — then run
   nothing else — no other comment, no label, no column move. And a card
   carrying an unapplied split block: Step 1 claims it and Step 2 splits it,
   into Planned at most in a pass a human starts. Otherwise it
-  belongs to `run` and the human — see Step 1. Step 0's removal of a
+  belongs to `run` and the human — see Step 1. A card you did put there
+  leaves Question when a human replies on it or, for a missing-prose-lane
+  question, when `prose-lane-available.py` reports available (Step 1). Step 0's removal of a
   duplicate `status:*` label changes no card's column and is not a touch.
 - **Never move anything to Todo in a pass a human starts.** Planned is your
   terminal column, and Todo is a human's release. The one pass that writes
@@ -1308,7 +1344,9 @@ are all in the Question column — then run
   lane-split comments, release-confirmation comments, advance-to-Todo
   comments (Step 4a), the removal of
   duplicate `status:*` labels (Step 0), and the Backlog → Planned, Backlog → Question
-  and Question → Planned moves — plus, for the original of a mid-development
+  and Question → Planned moves (for your own card a human has replied on, or
+  whose missing-prose-lane question `prose-lane-available.py` now answers —
+  Step 1) — plus, for the original of a mid-development
   split, its move out of Doing (to Planned or Question), and in a split pass
   only, Planned → Todo for that split's two tickets.
 - **Never close or re-title original tickets.** A reframe is a proposal in a
