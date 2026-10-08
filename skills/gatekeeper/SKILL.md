@@ -1,7 +1,7 @@
 ---
 name: gatekeeper
 disable-model-invocation: true
-description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned. A pass a human starts never moves anything to Todo; the one pass that does is the split session `run` starts (single_ticket=<id> advance_to_todo=true) when a dispatched prose-lane ticket turns out to need code: it files the code half as its own ticket, blocks the original on it, and moves both to Todo. Never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
+description: Board pre-flight — bundles open Backlog tickets into work packages (epics for collisions or effort batches) without asking for confirmation, then clarifies every open question against ticket, comments and code. A question it cannot answer itself is posted as a ticket comment, not asked in chat — the package moves to the board's Question column and the gatekeeper moves straight on to the next one, so one hard-to-clarify package never blocks the rest of a run and every card waiting on a human sits in one column. Clear packages move to Planned; on a later pass, an answered Question card of its own goes straight from Question to Planned, and so does one it parked for a missing prose lane once that plugin is enabled, no reply needed. A pass a human starts never moves anything to Todo; the one pass that does is the split session `run` starts (single_ticket=<id> advance_to_todo=true) when a dispatched prose-lane ticket turns out to need code: it files the code half as its own ticket, blocks the original on it, and moves both to Todo. Never dispatches the developer plugin, never edits code. Installed per project; invoke as "/agent-ticket-orchestrator:gatekeeper" from the project's main checkout (project_id=<id> overrides the repo-derived id). A human starts the session, but is not needed at the keyboard while it runs — open questions wait in ticket comments until the next invocation.
 ---
 
 # gatekeeper — bundle, clarify, release to Planned
@@ -781,8 +781,10 @@ Each result ends with a status line:
 
   A **repeat pass** (this package came in through Step 1's Question branch —
   it already carries an earlier `## Clarification needed (gatekeeper)`
-  comment and the human has since replied to it) re-dispatches the
-  `clarifier` exactly as above; it reads the reply itself. If it comes back
+  comment, and either the human has since replied to it or it came back
+  through Step 1's missing-prose-lane exception without a reply)
+  re-dispatches the `clarifier` exactly as above; it reads any reply
+  itself. If it comes back
   `NEEDS_INPUT` again, the new questions are posted and the card simply
   stays in Question — nothing to move. Count the `## Clarification needed (gatekeeper)`
   comments on the ticket (`list_comments`); at **4 or more**, add one line to
