@@ -724,7 +724,9 @@ that writes stays one package at a time.
    ordinary synchronous calls, and the turn waits until every one of them
    has returned.
 5. **Handle the results one at a time**, in the main turn, in dispatch order.
-   For one package: parse its frame block, then Step 3.5, Step 3.6, Step 3.7,
+   For one package: a result ending `STATUS: NEEDS_FETCH` first goes through
+   the fetch round (below), and everything after acts on its second result.
+   Then parse its frame block, then Step 3.5, Step 3.6, Step 3.7,
    then its status (the `NEEDS_INPUT` post and the move to Question, or
    Step 4) — all against that package's own clarifier result. Finish that
    package before you start on the next result. Never issue two packages'
@@ -748,7 +750,8 @@ Agent(
 )
 ```
 
-No answers are inlined into the prompt on this call — the `clarifier`'s own
+No answers are inlined into the prompt on this call, nor on the fetch
+round's second call, whose only addition is the fetch results — the `clarifier`'s own
 protocol already reads `list_comments` and treats an earlier
 `## Clarification needed (gatekeeper)` comment's replies as settled answers
 (`agents/clarifier.md`, "earlier clarification comments count as answers"),
@@ -756,6 +759,40 @@ so a human's reply left on the ticket between gatekeeper runs is picked up
 without you doing anything special here.
 
 Each result ends with a status line:
+
+- `STATUS: NEEDS_FETCH` → the clarifier found a premise about a dependency
+  and needs that dependency's source at the version the package will build
+  against. This result is not handled — no Step 3.5, no comment, no move.
+  Run the **fetch round** for this package, once:
+
+  1. For each `premise_fetch: <id> <json>` line in its frame block: create a
+     fresh empty directory (`mktemp -d`), and pipe one JSON object on
+     **stdin** — the line's `source` and `version`, plus `"dest": "<that
+     directory>"` — to
+
+     ```
+     python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/fetch-dependency-tag.py"
+     ```
+
+     (`python3` if `python` is not on PATH). Keep its stdout `result:`,
+     `ref:`, `path:` and `detail:` lines whatever the exit code: a
+     `tag-missing` or `unreachable` result is an answer the clarifier needs,
+     not a failure of the pass. An `error:` line instead of `result:` is
+     passed on as `result=unreachable detail=<the error line>`.
+  2. Re-dispatch this package's `clarifier`, synchronously, alone: the same
+     prompt as the call below, plus one line per `<id>`:
+
+     ```
+     premise_fetched: <id> result=<result> ref=<ref> path=<path> detail=<detail>
+     ```
+
+     (an absent value left empty). Handle only this second result, from
+     here on exactly as any other.
+  3. Once the second result is in, remove every directory step 1 created.
+  4. **One fetch round per package per pass.** A second result that ends
+     `STATUS: NEEDS_FETCH` again is not handled either: post no comment, move
+     nothing, write no relation — the package stays in its column — and record
+     `premise fetch unsettled: #<pkg>` for Step 5.
 
 - `STATUS: CLEAR` → go to Step 4.
 - `STATUS: NEEDS_INPUT` → it carries a `## Open Questions` section
@@ -809,8 +846,10 @@ value = unknown, unknown keys ignored. You need `symptom`, `measurement`,
 `ac`, `premise`, `unprovable_here`, `depends_on` and `needed_by` for every package, `chain`
 and `reframe` for Step 3.6, and `ac`, `premise` and `unprovable_here` again for
 Step 4's frame comment. `premise` may appear more than once — collect every
-occurrence, in the order they appear. `unprovable_here` is read the same way:
-every occurrence, `none` when absent.
+occurrence, in the order they appear, each verbatim with any `— verified: …`,
+`— falsified: …` or `— unverifiable: …` suffix the clarifier gave it.
+`unprovable_here` is read the same way: every occurrence, `none` when absent.
+`premise_fetch` is read only by the fetch round above and goes nowhere else.
 
 **Render the premises line, once, here — Step 3.6 and Step 4 both reuse this
 exact rendering as defined in Step 3, rather than each inventing their own.**
@@ -1194,6 +1233,11 @@ re-posted just to add one. Then:
 update_ticket(project_id, ticket_id=<package>, custom_fields={"Status": <native of Planned>}, response="light")
 ```
 
+Only a `STATUS: CLEAR` result makes this move. A premise the clarifier found
+`falsified` at the dependency's effective version arrives as
+`STATUS: NEEDS_INPUT` and takes Step 3's Question path; it never reaches
+Planned.
+
 This is the same call whether the package came from Backlog, from your own
 answered Question card (Step 1), or — the original of a mid-development
 split — from Doing or Question. Question → Planned is the one move out of
@@ -1269,7 +1313,8 @@ which is still in Backlog` for a blocker that has not itself reached Planned
 (Step 3.5); `dependency absorbed into the package`, `dependency #t already
 closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 `machine block failed (#<pkg>): <error>` (Step 3);
-`clarify order cycle: #a, #b` (Step 3);
+`clarify order cycle: #a, #b` (Step 3); `premise fetch unsettled: #<pkg>`
+(Step 3's fetch round);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
 2); `recut applied: #<from> → #<to>` (Step 3.7, lane split only); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)` and `oversized pair still waiting: #a, #b` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
@@ -1293,6 +1338,19 @@ Next to the "<n> Question cards still waiting, <m> belong to run" count,
 always when it is not zero: `ignored (gatekeeper-ignore): <n> — #<id>, #<id>`
 from Step 1's two report-only calls — a forgotten label is only visible
 here.
+
+When any package's frame carries a `premise:` value ending
+`— unverifiable: …`, on either status, add a section of its own, omitted when
+there is none:
+
+```
+Unverifiable premises — check before moving to Todo:
+#<pkg> — <the premise> — <why it could not be checked>
+```
+
+one line per such value. Nothing held these packages back: a premise the
+clarifier could not check at the dependency's effective version is the
+human's to check before the Planned → Todo move.
 
 For a returning candidate whose verdict changed from `previous_cut`, report
 the `changed_by` confidence signal — `changed_from_previous: #<id> —
