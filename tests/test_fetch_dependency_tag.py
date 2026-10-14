@@ -128,16 +128,16 @@ def test_git_fetch_at_tag_excludes_symbol_added_after_tag(upstream, tmp_path):
 
 # --- R3 ---------------------------------------------------------------
 
-def _decoy_cache(tmp_path):
+def _decoy_cache(tmp_path, version="0.0.2"):
     cwd = tmp_path / "cwd"
-    cache = cwd / "Library" / "PackageCache" / "com.example.dep@0.0.2" / "src"
+    cache = cwd / "Library" / "PackageCache" / f"com.example.dep@{version}" / "src"
     cache.mkdir(parents=True)
     (cache / "Use.cs").write_text("class UseObject {}\n")
     return cwd
 
 
 def test_git_missing_tag_reports_tag_missing_without_cache(upstream, tmp_path):
-    cwd = _decoy_cache(tmp_path)
+    cwd = _decoy_cache(tmp_path, "9.9.9")
     prior = tmp_path / "prior"
     assert _fields(_run(_git_payload(upstream, "0.0.2", prior))).get("result") == "fetched"
     dest = tmp_path / "out"
