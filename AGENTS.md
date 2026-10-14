@@ -217,6 +217,10 @@ forms silently vanish.
 
 **Why there is no CI fixture for any of this.** The `clarifier` is an LLM judgement dispatched inside a session, not a function: a fixture harness would need a live `claude -p`, an API key in CI and a live tracker, and would still be non-deterministic. The worked examples therefore live in `agents/clarifier.md` ("Worked frames") as prompt content — which changes behaviour — and `tests/test_pipeline_contract.py` asserts only that they are present and what outcome each states. **Do not "fix" this with a mock clarifier;** a test that asserts one hand-written string equals another tests nothing.
 
+### A dependency premise is checked at its tag, never in a cache (`agent-ticket-orchestrator#98`)
+
+A ticket can rest on "the dependency already offers X" while X only arrived after the version in scope. Incident: a local `Library/PackageCache` held v0.0.1 while v0.0.2 was the version that mattered, so a search there verified the wrong source. `scripts/gatekeeper/fetch-dependency-tag.py` (stdin JSON → `key: value` lines, like `relation-readback.py`) therefore fetches the dependency at the effective version from its git remote or npm-compatible registry into a fresh directory the caller names, and reports `fetched | tag-missing | unreachable`. It reads no local clone or package cache, and refuses a non-empty `dest` so an earlier fetch cannot be re-served. The clarifier has no `Bash`; the gate that calls this helper is prose in `agents/clarifier.md` and `skills/gatekeeper/SKILL.md` (#99), not here.
+
 ### Why state lives in the ticket, not in the return value
 
 A headless `claude -p` returns "process ended" plus prose. Reconstructing state from that prose — or from a subagent's reply — is how silent report loss happened in the lower plugin's fleet era (#60, #88). So the **ticket is the state store**: the process exit code is a courtesy, and `run` re-reads `list_comments(order="desc", limit=3, body_max_chars=600)` for the latest `adev:event` before every decision. A crash anywhere in the chain loses nothing that matters; re-running `run` picks the card up from its column.
