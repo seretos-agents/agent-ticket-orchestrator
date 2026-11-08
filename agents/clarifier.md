@@ -180,15 +180,17 @@ label one heading level deeper than a hand-written `##`.
      that project was to do. A premise whose only source is another
      project's ticket or release is a dependency premise. Check it at the
      version the package will build against, from the evidence tickets
-     only, in three steps. The unity-cockpit #7 and #5 passes listed such a
-     premise unchecked, ended `CLEAR`, and the night run stopped `blocked`
-     hours later on the capability the dependency did not have.
+     only, in three steps. A dependency premise listed unchecked under a
+     `CLEAR` frame reaches the night run, which then stops `blocked` hours
+     later on a capability the dependency does not have.
 
      1. **Effective version.** A bump ticket for that dependency in this
         package, in its epic or in `depends_on` (step 1b) names the version
         the package will build against. Without one, the effective version is
         the one this project's own repository states for the dependency,
         read under `local_path`, or else the one the package ticket names.
+        A version taken from the package ticket only picks which version to
+        check; it is not evidence that anything exists at that version.
         Knowing the version settles nothing; it only says which version the
         evidence must speak about.
      2. **Evidence — exactly three kinds of ticket, followed by link.** The
@@ -200,7 +202,8 @@ label one heading level deeper than a hand-written `##`.
         plainly it states the premise: not the package ticket's body, not a
         comment on the package ticket (the owner's included — "vX is
         published", a URL or tag pointing at a release, a list of
-        prerequisites), not a ticket named anywhere other than in that
+        prerequisites — the only exception is a reply to a question about
+        the premise, below), not a ticket named anywhere other than in that
         changelog, not your own reading of what a version string implies.
         These three are the dependency's whole interface to you: never
         search for an evidence ticket with `list_tickets`, and never read
@@ -225,26 +228,28 @@ label one heading level deeper than a hand-written `##`.
           and the package ends `STATUS: NEEDS_INPUT`. It is never listed
           unchecked, never "treated as given" in *Resolved by reading*, and
           never `verified` on the strength of a line that is not one of the
-          three kinds above.
+          three kinds above or the reply defined below.
+
+     **One exception: a reply to the question about this premise.** A
+     comment on the package ticket that is newer than a `## Clarification
+     needed (gatekeeper)` comment whose question names this premise is a
+     reply, and it settles the premise the way it answers: it holds →
+     `— verified: <the reply> at <version>`; it does not hold →
+     `— falsified: <the reply> at <version>`; release it anyway → no
+     suffix, the choice recorded in *Resolved by reading*, and nothing more
+     asked about it. A comment written before such a question was posted is
+     not a reply, whoever wrote it, and settles nothing.
 
      **Check each `— verified:` before you write it:** the reference after
-     `verified:` must be the bump ticket, its changelog, or a ticket that
-     changelog links. If it is a comment on the package ticket, the package
-     ticket's body, a URL, a tag or a version string, drop the suffix — the
-     premise is unsettled.
-
-     The one other line that settles a dependency premise is a reply on the
-     package ticket that is newer than a `## Clarification needed
-     (gatekeeper)` comment whose question names this premise. A reply that
-     says it holds or does not hold settles it — `— verified:` or
-     `— falsified:`, citing the reply. A reply that releases the package
-     anyway leaves the premise without a suffix; record that choice in
-     *Resolved by reading* and ask nothing more about it. A comment written
-     before such a question was posted is not a reply, whoever wrote it.
+     `verified:` must be the bump ticket, its changelog, a ticket that
+     changelog links, or a reply as defined in the exception above. Anything
+     else — any other comment on the package ticket, the package ticket's
+     body, a URL, a tag, a version string — means you drop the suffix, and
+     the premise is unsettled.
 
      A `falsified` or unsettled dependency premise is a question (step 4),
-     and the package ends `STATUS: NEEDS_INPUT`, unless such a reply already
-     answered it.
+     and the package ends `STATUS: NEEDS_INPUT` — unless a reply as defined
+     above already answered it.
 
    Report each premise as its own `premise:` line in the frame block (see
    Output format).
@@ -534,17 +539,18 @@ the intent.
   user gains, and `measurement: symptom` is the ordinary answer.
 - A dependency premise ending `— falsified: …`, or one the evidence tickets
   did not settle (no suffix, step 1c) ⇒ `STATUS: NEEDS_INPUT`, with the
-  question step 4 defines — unless a reply to a posted question about it
-  already answered it. A premise is unsettled when there is no bump ticket
-  for the effective version, when that bump ticket carries no changelog, or
-  when your only support is a line outside the bump ticket, its changelog
-  and the tickets that changelog links — a comment on the package ticket
-  saying the release exists is such a line. Before you write `STATUS:
-  CLEAR`, look at every dependency premise once more: each must carry
-  `— verified:` citing one of those three, or have been released by a
-  reply; anything else means `NEEDS_INPUT`. Listing such a premise and
-  ending `CLEAR` is not an option: that is how unity-cockpit #7 reached
-  Planned and stopped `blocked` in the night run.
+  question step 4 defines — unless a reply to the posted question about it
+  already answered it (step 1c's one exception). A premise is unsettled when
+  there is no bump ticket for the effective version, when that bump ticket
+  carries no changelog, or when your only support is a line outside the
+  bump ticket, its changelog, the tickets that changelog links and such a
+  reply — a comment on the package ticket saying the release exists, written
+  without such a question before it, is such a line. Before you write
+  `STATUS: CLEAR`, look at every dependency premise once more: each must
+  carry `— verified:` citing one of those three tickets or such a reply, or
+  have been released by such a reply; anything else means `NEEDS_INPUT`.
+  Listing such a premise and ending `CLEAR` is not an option: the package
+  would reach Planned and stop `blocked` in the night run.
 
 ## Worked frames
 
