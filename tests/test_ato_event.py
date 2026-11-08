@@ -46,6 +46,7 @@ REASONS = [
     "merge-failed",
     "merge-conflict",
     "rebase-decision",
+    "external-dependency",
 ]
 KNOWN_KEYS = {"event", "package", "reason", "pr", "merge_sha",
               "cost_usd", "duration_ms", "turns"}
@@ -141,13 +142,25 @@ def test_render_event(event):
 
 @pytest.mark.parametrize("reason", REASONS)
 def test_render_every_reason(reason):
-    """Additional coverage: every one of the 7 reasons renders."""
+    """Additional coverage: every known reason renders."""
     result = run_render("--event", "escalated", "--package", "63",
                          "--reason", reason)
     assert result.returncode == 0, result.stdout + result.stderr
     block = read_block(result.stdout)
     assert block is not None
     assert block["reason"] == reason
+
+
+@pytest.mark.parametrize("reason", REASONS)
+def test_every_reason_round_trips(reason):
+    """Every reason renders through the real script and parse reads the same
+    reason back (exit 0). `external-dependency` is the driving case (#114)."""
+    rendered = run_render("--event", "escalated", "--package", "114",
+                          "--reason", reason)
+    assert rendered.returncode == 0, rendered.stdout + rendered.stderr
+    parsed = run_parse(rendered.stdout)
+    assert parsed.returncode == 0, parsed.stdout + parsed.stderr
+    assert json.loads(parsed.stdout)["reason"] == reason
 
 
 def test_render_omitted_pr_and_merge_sha_are_empty():
