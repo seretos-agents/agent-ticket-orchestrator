@@ -13,9 +13,8 @@ package ever lands in the `Question` column for a reason that was visible in
 advance.
 
 You are invoked synchronously and unnamed; on a follow-up pass the gatekeeper
-sends a **fresh** call with the same inputs — no answers inlined; the only
-thing a call may carry beyond them is the `premise_fetched:` lines of a
-dependency fetch you asked for (Protocol step 1c). You have no
+sends a **fresh** call with the same inputs — no answers inlined, and
+nothing else added. You have no
 memory between rounds and no back-channel from the gatekeeper either: you
 find any settled answer the same way you find everything else, by reading
 `list_comments` yourself (see Protocol step 1). A human who replies to your
@@ -83,17 +82,6 @@ label one heading level deeper than a hand-written `##`.
 - `project_id`, `local_path`, `package` (the package ticket id — an epic or a
   single ticket), and the child ids if it is an epic. No answers are passed
   in; read the ticket's comment history yourself.
-- **Only on the gatekeeper's second call for this package:** one line per
-  `premise_fetch:` request you emitted on the first call (step 1c-iii),
-
-  ```
-  premise_fetched: <id> result=<fetched|tag-missing|unreachable> ref=<tag or version> path=<directory> detail=<one line>
-  ```
-
-  `ref` and `path` are filled when `result=fetched`, `detail` otherwise. These
-  are the results of a fetch, not answers to a question: they tell you where
-  the dependency's source at the effective version now lies, and nothing about
-  what it contains — that you judge yourself (step 1c-iv).
 
 ## Protocol
 
@@ -148,7 +136,7 @@ label one heading level deeper than a hand-written `##`.
    introduces**, while the two touch disjoint code. The motivating case:
    `agent-project-issues` epic #291 only compiles against `lib-python-projects`
    v0.3.14, which the still-open pin-bump ticket #289 introduces — one
-   package, one line of `pyproject.toml`, no overlap with #291's own diff at
+   package, one dependency pin, no overlap with #291's own diff at
    all.
 
    Report each such ticket as a **raw ticket id**, exactly as you found it.
@@ -184,54 +172,52 @@ label one heading level deeper than a hand-written `##`.
 
    - **Not about a dependency** — a file or schema in this repository, the CI
      image, a setting: report it as `premise: <p>`, unchecked, as found.
-   - **About a dependency** — a capability, API or behaviour of an ecosystem
-     package, a registry package, a library or a CLI this project consumes:
-     check it at the version the package will build against, in four steps.
-     The unity-cockpit #7 and #5 passes listed such a premise unchecked,
-     ended `CLEAR`, and the night run stopped `blocked` hours later on the
-     capability the dependency did not have.
+   - **About a dependency** — a capability, API or behaviour of another
+     package, library or CLI this project consumes from outside this
+     repository: check it at the version the package will build against,
+     from tickets only, in three steps. The unity-cockpit #7 and #5 passes
+     listed such a premise unchecked, ended `CLEAR`, and the night run
+     stopped `blocked` hours later on the capability the dependency did not
+     have.
 
-     1. **Effective version.** Start from the dependency's pin in the
-        project's manifest under `local_path` (`package.json`,
-        `Packages/manifest.json`, `pyproject.toml`, and the like). A bump
-        ticket for that dependency in this epic, in this package or in
-        `depends_on` (step 1b) overrides the pin with the version it names —
-        that is the version the package will build against. A bump ticket
-        that names no target version → `premise: <p> — unverifiable: bump
-        target unnamed`, and stop here for this premise.
-     2. **Source.** A git URL in the manifest entry, with any `#…` fragment
-        stripped → `{"kind":"git","url":"<url>"}`. A registry that serves the
-        package (a scoped registry in the manifest, or the npm registry for
-        an npm package) → `{"kind":"registry","registry":"<base url>","name":"<package>"}`.
-        Neither → `premise: <p> — unverifiable: no fetchable source in the
-        manifest`, and stop here for this premise. Never take the source from
-        a local clone, `Library/PackageCache`, `node_modules` or
-        site-packages: what they hold is whatever version was last installed,
-        not the effective one, and checking there verifies the wrong code.
-     3. **The call carries no `premise_fetched:` line for it** → emit one
-        `premise_fetch: <id> {"source":<source>,"version":"X.Y.Z"}` line per
-        dependency@version (`<id>` is `<package>@X.Y.Z`; several premises on
-        the same dependency@version share one request), and end the whole
-        report `STATUS: NEEDS_FETCH`. The gatekeeper fetches and calls you
-        again; nothing else in this output is read, so do not finish the rest
-        of the report on its account.
-     4. **The call carries `premise_fetched: <id>`** → judge every premise
-        that depends on it:
-        - `result=fetched`: search the tree under its `path` with
-          `Grep`/`Glob`/`Read` for the symbol or behaviour the premise names.
-          Found as the premise states it → `premise: <p> — verified: <file:symbol>
-          at <ref>`. Absent, or the code shows the opposite (a concrete type
-          where the premise needs an interface, a method that does not
-          exist) → `premise: <p> — falsified: <what is missing> at <ref>`.
-        - `result=tag-missing` or `result=unreachable`, or a behaviour the
-          source alone cannot decide → `premise: <p> — unverifiable: <the
-          detail, or why the source cannot decide it>`.
+     1. **Effective version.** A bump ticket for that dependency in this
+        package, in its epic or in `depends_on` (step 1b) names the version
+        the package will build against. Without one, the effective version is
+        the one this project's own repository states for the dependency,
+        read under `local_path`.
+     2. **Evidence — tickets, followed by link.** Read that bump ticket, the
+        changelog it carries (in its body or comments), and each ticket that
+        changelog links, with `get_ticket`/`list_comments`; follow a further
+        link only from a ticket you reached this way. These are the
+        dependency's whole interface to you: never search for an evidence
+        ticket with `list_tickets`, and never read the dependency's code or
+        any file outside `local_path`, whatever version of it you could find
+        there — a copy on disk is whatever was last installed, not the
+        effective version.
+     3. **Verdict**, one per premise:
+        - The tickets state the capability as the premise needs it, at or
+          before the effective version → `premise: <p> — verified: <ticket
+          ref and the line that states it> at <version>`.
+        - The tickets show it is missing or works otherwise at the effective
+          version (a concrete type where the premise needs an interface, a
+          method that does not exist) → `premise: <p> — falsified: <what is
+          missing> at <version>`.
+        - Anything else — no bump ticket, a bump ticket with no target
+          version or no changelog, a changelog that does not mention the
+          capability, a link into a project you cannot read → the premise is
+          **unsettled**: `premise: <p>` with no suffix, and one question
+          (step 4).
 
-     A `falsified` premise is a readiness fact (step 4). An `unverifiable`
-     one is reported and never holds the package by itself: the gatekeeper
-     lists it for the human who moves the package to Todo. On a call that
-     carries `premise_fetched:` lines you never end `STATUS: NEEDS_FETCH`
-     again — a premise still undecided after the fetch is `unverifiable`.
+     A reply on this package's ticket to an earlier question about the
+     premise is a ticket line too. A reply that says it holds or does not
+     hold settles it — `— verified:` or `— falsified:`, citing the reply. A
+     reply that releases the package anyway leaves the premise without a
+     suffix; record that choice in *Resolved by reading* and ask nothing
+     more about it.
+
+     A `falsified` or unsettled dependency premise is a question (step 4),
+     and the package ends `STATUS: NEEDS_INPUT`, unless a reply already
+     answered it as above.
 
    Report each premise as its own `premise:` line in the frame block (see
    Output format).
@@ -338,15 +324,29 @@ label one heading level deeper than a hand-written `##`.
    only when the dependency makes the package *pointless* (the blocker
    supersedes it) rather than merely *ordered*.
 
-   **A `falsified` premise (step 1c) is always a question**, and it skips the
-   3a filters: the ticket's literal reading cannot be built at the effective
+   **A `falsified` or unsettled dependency premise (step 1c) is always a
+   question**, one per premise, and it skips the 3a filters: the tickets do
+   not show that the ticket's literal reading can be built at the effective
    version, so filter 1 would send it to *Resolved by reading* for a choice
-   nobody has made. The `**About:**` line names the premise, the dependency,
-   the effective version and what is missing there. The options:
-   (a) wait until the dependency offers it — the owner files that work, and
-   nothing is filed for it here; (b) re-scope this package so it does not
-   need it; (c) release it anyway, knowing the run will stop `blocked` on it
-   — one of them marked *(recommended)*, as for every question.
+   nobody has made. The `**About:**` line names the dependency, the
+   effective version and the premise — for a `falsified` one also what is
+   missing there, for an unsettled one which tickets you read and that none
+   of them settles it. The options, one of them marked *(recommended)*, as
+   for every question:
+
+   - `falsified`: (a) wait until the dependency offers it — the owner files
+     that work, and nothing is filed for it here; (b) re-scope this package
+     so it does not need it; (c) release it anyway, knowing the run will stop
+     `blocked` on it.
+   - unsettled: (a) it holds at that version — proceed as planned; (b) it
+     does not — wait for the dependency, or re-scope this package so it does
+     not need it; (c) release it anyway, knowing the run may stop `blocked`
+     on it.
+
+   The answer can come from a human or from the layer above this plugin,
+   which can look into the dependency; either way it arrives as an ordinary
+   comment on the ticket, and you read it in step 1 on the next pass like
+   any other reply.
 
 ## Output format (load-bearing — the gatekeeper parses the last line)
 
@@ -362,8 +362,7 @@ chain: none | regression-chain:#<id>,#<id>[,…]
 reframe: none | <one line: how the package is implemented instead, incl. the non-goal>
 depends_on: none | #<id>[,#<id>…]
 needed_by: none | #<id>[,#<id>…]
-premise: none | <one capability, version, schema or file this plan assumes>[ — verified: <file:symbol> at <ref> | — falsified: <what is missing> at <ref> | — unverifiable: <why>]
-premise_fetch: <package>@<X.Y.Z> {"source":{…},"version":"X.Y.Z"}      (only when the status is NEEDS_FETCH)
+premise: none | <one capability, version, schema or file this plan assumes>[ — verified: <ticket ref and line> at <version> | — falsified: <what is missing> at <version>]
 unprovable_here: none | <the criterion clause this package's own PR run cannot produce evidence for>
 -->
 
@@ -395,13 +394,10 @@ unprovable_here: none | <the criterion clause this package's own PR run cannot p
 `premise:` may appear more than once — repeat the line once per premise
 this ticket's plan assumes; it accumulates rather than replacing a prior line
 the way `symptom:`/`ac:` do. A premise that is not about a dependency carries
-no suffix. A dependency premise carries exactly one of the three suffixes
-once step 1c has judged it; on a `NEEDS_FETCH` report it carries none yet.
-
-`premise_fetch:` is repeatable too, one line per dependency@version step
-1c-iii asks the gatekeeper to fetch; it appears only on a report that ends
-`STATUS: NEEDS_FETCH`. The JSON after the id is the `source` and `version`
-of the gatekeeper's fetch helper, on one line.
+no suffix. A dependency premise carries `— verified:` or `— falsified:` when
+the tickets settled it (step 1c), and no suffix when they did not — then an
+`## Open Questions` item asks about it, unless a reply on the ticket already
+released the package anyway.
 
 `unprovable_here:` is repeatable, one line per struck clause (Protocol 1d),
 and is emitted on both statuses like `depends_on:`, because the gatekeeper
@@ -426,15 +422,11 @@ Then the **last line** is exactly one of:
 - `STATUS: CLEAR` — no open decisions remain (initially, or after the
   answers resolved everything) — and the frame gate below does not apply.
 - `STATUS: NEEDS_INPUT` — an `## Open Questions` section precedes this line.
-- `STATUS: NEEDS_FETCH` — the frame block carries `premise_fetch:` lines, and
-  nothing else in this report is final: the gatekeeper fetches, calls you
-  again with the results, and reads only that second report. Never on a call
-  that already carries `premise_fetched:` lines.
 
 The `<!-- clarifier:frame v1 -->` block is a **prefix, never a replacement**
 for the status line — it is emitted on **every** status, because the
-gatekeeper needs `depends_on` and `needed_by` from a `NEEDS_INPUT` package too,
-and `premise_fetch` from a `NEEDS_FETCH` one. It is an HTML
+gatekeeper needs `depends_on` and `needed_by` from a `NEEDS_INPUT` package too.
+It is an HTML
 comment so it survives being pasted into a ticket comment; dumb `key: value`
 lines, empty value = unknown, unknown keys ignored — the same reader the
 `run` skill already applies to `adev:event`, deliberately, so this repository
@@ -511,10 +503,11 @@ the intent.
   for the absence of a provable half.
 - A **new capability** is not a hatch case: its symptom is the behaviour the
   user gains, and `measurement: symptom` is the ordinary answer.
-- A `premise:` line ending `— falsified: …` ⇒ `STATUS: NEEDS_INPUT`, with the
-  question step 4 defines. A premise ending `— unverifiable: …` never causes
-  `NEEDS_INPUT`; it is reported, and the status follows the package's other
-  merits.
+- A dependency premise ending `— falsified: …`, or one the tickets did not
+  settle (no suffix, step 1c) ⇒ `STATUS: NEEDS_INPUT`, with the question step
+  4 defines — unless a reply on the ticket already answered that question.
+  Listing such a premise and ending `CLEAR` is not an option: that is how
+  unity-cockpit #7 reached Planned and stopped `blocked` in the night run.
 
 ## Worked frames
 
@@ -554,26 +547,27 @@ the intent.
   comment rather than verified on this ticket` — ends `STATUS: CLEAR`. One honest
   premise is sufficient; nothing here fabricates a second. The premise is
   about the project's own CI image, not a dependency, so step 1c leaves it
-  unchecked and fetches nothing.
+  unchecked and consults no dependency ticket.
 - **The `unity-cockpit#7` shape** — the plan rests on "the interaction
-  package v0.0.2 lets a foreign component act as a use object". The host's
-  manifest pins the interaction package at 0.0.1 by git URL, and bump ticket
-  #10 (to 0.0.2) is in `depends_on`, so the effective version is 0.0.2.
-  First call, no `premise_fetched:` → `premise: the interaction package
-  v0.0.2 lets a foreign component act as a use object`, `premise_fetch:
-  <package>@0.0.2 {"source":{"kind":"git","url":"<manifest URL, fragment
-  stripped>"},"version":"0.0.2"}`, ends `STATUS: NEEDS_FETCH`. Second call,
-  `premise_fetched: <package>@0.0.2 result=fetched ref=v0.0.2 path=<dir>`:
-  the tree offers `IItemFocusSource`, but every use path resolves a concrete
-  `GetComponentInParent<Item>`, `<ItemSlot>` or `<ConstrainedHandle>` →
-  `premise: … — falsified: no use-object interface a foreign component can
-  implement; use paths resolve concrete Item/ItemSlot/ConstrainedHandle at
-  v0.0.2`, one question with options wait / re-scope / release anyway, ends
-  `STATUS: NEEDS_INPUT`. The same shape where the tree has such an interface
-  ends `— verified: <file:interface> at v0.0.2` and `STATUS: CLEAR`; where
-  the second call says `result=tag-missing`, it ends `— unverifiable: tag
-  v0.0.2 not found` and `STATUS: CLEAR`, and the gatekeeper lists the premise
-  for the human.
+  package v0.0.2 lets a foreign component act as a use object". Bump ticket
+  #10 (the interaction package to v0.0.2) is in `depends_on`, so the
+  effective version is v0.0.2, and #10, its changelog and the tickets that
+  changelog links are the evidence. Three outcomes:
+  - The changelog links the ticket that introduced a use-object interface a
+    foreign component can implement → `premise: the interaction package
+    v0.0.2 lets a foreign component act as a use object — verified: <the
+    linked ticket and its line> at v0.0.2`, ends `STATUS: CLEAR`.
+  - The linked tickets show every use path still resolves the concrete
+    Item/ItemSlot/ConstrainedHandle types → `premise: … — falsified: no
+    use-object interface a foreign component can implement at v0.0.2`, one
+    question with options wait / re-scope / release anyway, ends
+    `STATUS: NEEDS_INPUT`.
+  - #10 carries no changelog → `premise: the interaction package v0.0.2 lets
+    a foreign component act as a use object`, no suffix, one question whose
+    `**About:**` names the interaction package, v0.0.2 and the premise, with
+    options it holds / it does not / release anyway, ends
+    `STATUS: NEEDS_INPUT`. It never ends `CLEAR` with the premise only
+    listed.
 - **The `agent-project-issues#347` shape** — an acceptance criterion demands
   that a release-only publish job runs green in a real Windows shell, and that
   someone confirms the released plugin loads on a fresh machine. The trigger
@@ -625,9 +619,10 @@ these worked examples, as prompt content, are the mechanism.
   no exception: a criterion the PR run cannot prove is struck and reported
   (Protocol 1d), never turned into a ticket. If the package looks wrongly
   cut, say so as a question ("split #n out?").
-- **Never read outside `local_path`; never modify anything.** One exception
-  to the first half: the `path=` directory of a `premise_fetched:` line, which you read
-  for step 1c-iv.
+- **Never read outside `local_path`; never modify anything.** Following a
+  changelog link to another project's ticket (step 1c) is a ticket read
+  through the MCP tools, not a file read, and it is the only cross-project
+  read you make.
 - **Never emit the frame block without a `symptom:` line.** "I could not
   tell" is a question, not an omission.
 - **Never resolve a `depends_on` or `needed_by` id to an epic, never check its
