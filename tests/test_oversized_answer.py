@@ -276,3 +276,29 @@ def test_a_second_proposal_is_parsed_not_hard_coded():
         "open a saved project", "save a project and reopen it",
         "open the data in a spreadsheet"], where(r)
     assert [out.get(f"covers_{i}") for i in (1, 2, 3)] == ["#21", "#21,#33", "#33"], where(r)
+
+
+@pytest.mark.parametrize("machine_body", [
+    "<!-- gatekeeper:frame v1\nac_rewritten: no\n-->\n\nOption a",
+    "Option a\n\n<!-- adev:event v1\nevent: started\n-->",
+    "option (a)\n\n<!-- ato:event v1\nevent: escalated\n-->",
+])
+def test_machine_block_comments_with_choice_text_are_not_replies(machine_body):
+    r = run(base([c("#9", "r1", 5, machine_body)]))
+    out = parse(r)
+    assert out.get("verdict") == "nothing" and out.get("reason") == "no-reply", where(r)
+
+
+def test_ordering_follows_created_at_not_array_position():
+    comments = [c("#9", "r2", 9, "Actually, option b"), c("#9", "r1", 5, "Option a"),
+                c("#14", "p2", 1, POINTER), c("#9", "p1", 0, PROPOSAL)]
+    out = parse(run(comments))
+    assert out.get("verdict") == "nothing" and out.get("reason") == "chose-b"
+    assert out.get("reply") == "r2"
+
+
+def test_newer_than_proposal_is_by_timestamp_not_position():
+    comments = [c("#9", "p1", 3, PROPOSAL), c("#14", "p2", 4, POINTER),
+                c("#9", "r0", 0, "Option a")]
+    out = parse(run(comments))
+    assert out.get("reason") == "no-reply"
