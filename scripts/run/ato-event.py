@@ -57,6 +57,8 @@ not read SKILL.md):
     merge-failed       -- l.482-484
     merge-conflict     -- l.545
     rebase-decision    -- l.552
+    external-dependency -- a package waits on an external dependency
+                           (wired in #115)
 
 `pr`, `merge_sha` and `package` are free strings, but must not contain a
 newline or the literal `-->` -- either would split or prematurely close the
@@ -87,6 +89,7 @@ REASONS = (
     "merge-failed",
     "merge-conflict",
     "rebase-decision",
+    "external-dependency",
 )
 
 # Fixed order the block is always rendered (and read) in.
