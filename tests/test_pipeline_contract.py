@@ -1806,10 +1806,11 @@ def test_bundler_slices_pass_the_observable_test_or_are_not_emitted():
 def test_gatekeeper_turns_an_oversized_pair_into_one_question():
     text = _read(GATEKEEPER)
     sec = _slice(
-        text, "### An oversized pair is a Question, not a cut",
+        text, "### An oversized pair is a Question",
         "From here on, *package ticket* means",
     )
-    posts = _call_spans(sec, "add_comment")
+    posts = [p for p in _call_spans(sec, "add_comment")
+             if "## Clarification needed (gatekeeper)" in p[1]]
     assert len(posts) == 1, "exactly one proposal comment is defined, on the lower id"
     body = posts[0][1]
     for tok in ("## Clarification needed (gatekeeper)", "**About:**", "**Decision:**",
@@ -1830,11 +1831,16 @@ def test_gatekeeper_turns_an_oversized_pair_into_one_question():
     )
 
     moves = _call_spans(sec, "update_ticket")
-    assert moves and all("Question" in m[1] and "Planned" not in m[1] for m in moves)
+    col_moves = [m for m in moves if "custom_fields" in m[1]]
+    assert col_moves and all("Question" in m[1] and "Planned" not in m[1] for m in col_moves)
     assert re.search(r"\*\*Both cards go to Question\*\*", sec)
     assert re.search(r"[Nn]either is clarified and neither is released", flat)
     assert re.search(r"pointer|Point the other card", sec)
-    assert "create_ticket" not in sec and "add_relation" not in sec
+    if "create_ticket" in sec or "add_relation" in sec:
+        # a cut on answer (a) is allowed only behind the script's verdict (#103/#111)
+        assert "oversized-answer.py" in sec and "verdict: apply" in sec, (
+            "writing in the oversized section must be gated on oversized-answer.py"
+        )
 
     step1 = _slice(text, "## Step 1", "## Step 2")
     assert "proposal_on:" in step1, "Step 1 must bring the pointer card back with its pair"
@@ -1843,15 +1849,17 @@ def test_gatekeeper_turns_an_oversized_pair_into_one_question():
     assert '"oversized"' in json_block and '"recut"' not in json_block
 
 
-def test_gatekeeper_step_3_7_has_the_lane_split_as_its_only_source():
+def test_gatekeeper_step_3_7_recut_sources_are_gated():
     text = _read(GATEKEEPER)
     first_para = _slice(text, "## Step 3.7", "## Step 4").split("\n\n", 1)[0]
-    assert re.search(r"lane split is the only source", first_para), first_para
+    assert re.search(r"lane split is the only source", first_para) or (
+        "lane split" in first_para and "(a)" in first_para
+    ), first_para
     assert re.search(r"bundler emits none", first_para), first_para
     assert "Step 3.4" not in first_para
     rules = text.split("## Hard rules", 1)[1]
     assert any(
-        l.startswith("- **") and "size-driven cut" in l and "lane split" in l
+        l.startswith("- **") and "size-driven cut" in l and ("lane split" in l or "(a)" in l)
         for l in rules.splitlines()
     ), "a Hard rule must forbid a size-driven cut and name the lane split's recut"
 
@@ -3152,8 +3160,16 @@ def test_gatekeeper_records_the_struck_clause_in_the_frame_comment():
 
 def test_gatekeeper_creates_nothing_for_an_unprovable_criterion():
     text = _read(GATEKEEPER)
-    assert len(_call_spans(text, "create_ticket")) == 2, (
-        "exactly two create_ticket call sites remain: the lane split and the epic"
+    oversized = ""
+    if "### An oversized pair is a Question" in text:
+        oversized = _slice(text, "### An oversized pair is a Question",
+                           "From here on, *package ticket* means")
+    assert len(_call_spans(text.replace(oversized, ""), "create_ticket")) == 2, (
+        "exactly two create_ticket call sites remain outside the oversized section: "
+        "the lane split and the epic"
+    )
+    assert len(_call_spans(oversized, "create_ticket")) <= 1, (
+        "the oversized section may file at most the cut's one new ticket, behind (a)"
     )
     step35 = _slice(text, "## Step 3.5", "## Step 3.6")
     deps = _slice(step35, "deps =", "for each raw target")
