@@ -117,4 +117,4 @@ A live check that both backends go through the pipeline the same way. It needs t
 
 ## Release
 
-Manual: Actions → `release` → `version=X.Y.Z`. The workflow stamps the version into both manifests, pushes an orphan `release` branch with the install-ready tree (`skills/`, `agents/`, manifests, `assets/`, `description.md`), tags `agent-ticket-orchestrator--vX.Y.Z`, publishes a GitHub Release and dispatches to `seretos-agents/modular-software-factory` via the `MARKETPLACE_DISPATCH_TOKEN` secret.
+Manual: Actions → `release` → `version=X.Y.Z`. The workflow stamps the version into both manifests, pushes an orphan `release` branch with the install-ready tree (`skills/`, `agents/`, manifests, `assets/`, `description.md`), tags `agent-ticket-orchestrator--vX.Y.Z`, publishes a GitHub Release and dispatches to `seretos-agents/modular-software-factory` via the `ECOSYSTEM_TOKEN` secret.
