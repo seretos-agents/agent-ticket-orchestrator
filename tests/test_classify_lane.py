@@ -280,7 +280,7 @@ def _check_step1_label_filters(text):
     reports = [c for c in calls if lists(c, "labels") is not None]
     assert sorted(column(c) for c in candidates) == ["Backlog", "Question"]
     for c in candidates:
-        assert "gatekeeper-ignore" in lists(c, "not_labels"), f"candidate call lacks the ignore filter: {c}"
+        assert "gatekeeper-ignore" in lists(c, "not_labels"), f"each candidate list contains gatekeeper-ignore: missing in {c}"
     assert lists(candidates[0], "not_labels") == lists(candidates[1], "not_labels"), "one filter, both columns"
     excluded = lists(candidates[0], "not_labels")
     for c in reports:
@@ -330,10 +330,13 @@ def test_ignore_filter_check_accepts_the_blocked_upstream_shape():
 def test_ignore_filter_check_rejects_a_column_without_the_filter():
     import pytest
     text = _blocked_upstream_shape(_text(GATEKEEPER))
-    text = _replace_once(
-        text,
-        'column="Question", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])',
-        'column="Question", status="open", limit=100, omit_body=True, not_labels=["blocked-upstream"])',
-    )
-    with pytest.raises(AssertionError):
+    # Drop the filter from BOTH candidate calls so the two lists stay equal and
+    # only the "each candidate list contains gatekeeper-ignore" assertion can fire.
+    for col in ("Backlog", "Question"):
+        text = _replace_once(
+            text,
+            f'column="{col}", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])',
+            f'column="{col}", status="open", limit=100, omit_body=True, not_labels=["blocked-upstream"])',
+        )
+    with pytest.raises(AssertionError, match="each candidate list contains gatekeeper-ignore"):
         _check_step1_label_filters(text)
