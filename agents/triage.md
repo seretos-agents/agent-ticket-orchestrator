@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Tries to answer one `blocked` event from the lower plugin (agent-autonomous-developer or agent-autonomous-prompt-engineer), or one terminal `failed` summary the run skill hands over after its retry — reads the ticket, its comments, siblings, and the code, and decides whether the stated question is genuinely undecidable or actually answerable from context, including whether an existing test may change (mapped to the acceptance criterion it verifies). Ends with STATUS: ANSWERED (a chosen option plus reasoning), STATUS: EXTERNAL (the chosen option needs a change in another project first — names that project and the change) or STATUS: ESCALATE. Read-only — never writes comments. Invoked by the run skill via a single synchronous (unnamed) call per blocked or failed event, at most once per package per run.
+description: Tries to answer one `blocked` event from the lower plugin (agent-autonomous-developer or agent-autonomous-prompt-engineer), or one terminal `failed` summary the run skill hands over after its retry — reads the ticket, its comments, siblings, and the code, and decides whether the stated question is genuinely undecidable or actually answerable from context, including whether an existing test may change (mapped to the acceptance criterion it verifies). Ends with STATUS: ANSWERED (a chosen option plus reasoning; when that option's change lies in another project, a `triage:external` block above the status line names that project and the change) or STATUS: ESCALATE. Read-only — never writes comments. Invoked by the run skill via a single synchronous (unnamed) call per blocked or failed event, at most once per package per run.
 tools: Read, Glob, Grep, mcp__plugin_agent-project-issues_project-issues__get_ticket, mcp__plugin_agent-project-issues_project-issues__list_comments, mcp__plugin_agent-project-issues_project-issues__list_hierarchy, mcp__plugin_agent-project-issues_project-issues__list_tickets, mcp__plugin_agent-project-issues_project-issues__list_prs, mcp__plugin_agent-serena-wrapper_serena__find_symbol, mcp__plugin_agent-serena-wrapper_serena__get_symbols_overview, mcp__plugin_agent-serena-wrapper_serena__find_referencing_symbols, mcp__plugin_agent-serena-wrapper_serena__find_declaration, mcp__plugin_agent-serena-wrapper_serena__find_implementations
 model: opus
 ---
@@ -73,8 +73,8 @@ need is in the prompt.
 4. **When you can answer**, pick the option that best fits what you found —
    not automatically the lower plugin's own recommended option, if the
    evidence points elsewhere — and say in one or two sentences why. Whether
-   that answer ends `ANSWERED` or `EXTERNAL` depends on where its change has
-   to be made: step 8.
+   that `ANSWERED` carries a `triage:external v1` block depends on where its
+   change has to be made: step 8.
 
    **For a `failed` summary, the acceptance criterion is the requirement and
    the ticket's account of the fix is an estimate.** A ticket often says how
@@ -202,9 +202,10 @@ need is in the prompt.
    is `code`, or the event has any other shape, this step does not apply and
    steps 3–6 decide.
 
-8. **An answer whose change lies in another project is not `ANSWERED`.**
-   This step applies to `blocked` and `failed` events alike, after step 7:
-   when step 7's split applies, this step does not. Take the option you would
+8. **An answer whose change lies in another project carries a
+   `triage:external v1` block.** This step applies to `blocked` and `failed`
+   events alike, after step 7: when step 7's split applies, this step does
+   not. Take the option you would
    choose by steps 3–6 and ask where its change has to be made. When that
    option needs a change in a repository other than `project_id` — a pinned
    dependency that lacks the fix, a package or library another repository
@@ -216,22 +217,36 @@ need is in the prompt.
    - say in your paragraph why another session in this project cannot meet
      the criterion, citing the criterion and the code or event line that
      shows where the change lies;
-   - name the other project as the event, the ticket or the code names it —
-     `owner/repo` when you can read it — and the change needed there in one
-     sentence (what must exist or change, and where, when you know it);
-   - end with the `EXTERNAL` line of the output format.
+   - directly above your status line, write this block, with each field
+     taken from the event, the ticket or the code:
+
+     ```
+     <!-- triage:external v1
+     package: <id>
+     attempt: <the attempt of the blocked or failed event>
+     project: <the other project — owner/repo when you can read it, otherwise as the event, the ticket or the code names it>
+     change: <the change needed there, in one line — what must exist or change, and where, when you know it>
+     -->
+     ```
+
+   - end with `STATUS: ANSWERED` and the chosen option. `run` reads the block
+     and hands the card to a human with the project and change it names, so
+     both must stand in the block itself.
 
    Leftover work in this project that only becomes meaningful once the
    external change exists — tests or documentation on top of a fix the other
    project has not made — does not make the option in-project. When the
    change lies outside but you cannot name the other project from what you
-   read, end with the `ESCALATE` line instead and say so. This step is about
-   where the change lies, not about dependencies in general: bumping a pin to
-   a version that is already released, or any change inside `local_path`, is
-   in-project work and stays an ordinary `ANSWERED`.
+   read, write no block, end with the `ESCALATE` line instead and say so.
+   This step is about where the change lies, not about dependencies in
+   general: the trigger is that the criterion cannot be met inside
+   `local_path`, not that a dependency is mentioned. Bumping a pin to a
+   version that is already released, code that merely uses a pinned package,
+   or any other change inside `local_path` is in-project work: an ordinary
+   `ANSWERED` with no block.
 
 ## Output format (load-bearing — `run` parses the last line and, on
-`ANSWERED` or `EXTERNAL`, what it names)
+`ANSWERED`, the block above it)
 
 ```
 ## Package #<id> — triage
@@ -242,21 +257,22 @@ Then the **last line** is exactly one of:
 
 - `STATUS: ANSWERED — <the chosen option, verbatim or near-verbatim> — <one
   short reason>`
-- `STATUS: EXTERNAL — <the other project, owner/repo when known> — <the
-  change needed there> — <one short reason>` (step 8 only)
 - `STATUS: ESCALATE — <one short reason it is not answerable from context>`
 
-`run` re-dispatches the package on `ANSWERED`; on `EXTERNAL` it starts no
-further session and hands the card to a human with the project and change you
-named, so both must stand on the status line itself.
+`run` re-dispatches the package on a plain `ANSWERED`. Two blocks change what
+it does instead, and each stands on its own lines directly above the
+`STATUS: ANSWERED` line, after the paragraph, with the status line still the
+last line:
 
-When step 7's split applies, its `<!-- triage:split v1 … -->` block stands on
-its own lines directly above the `STATUS: ANSWERED` line, after the
-paragraph; the status line stays the last line. No other answer carries the
-block — `run` reads its presence as "start the split", so it never appears on
-an `ESCALATE`, an `EXTERNAL` or any other `ANSWERED`. Step 7's split moves
-requirements into a code ticket of *this* project; step 8 is a change in
-*another* project.
+- step 7's `<!-- triage:split v1 … -->` block — `run` starts the split;
+- step 8's `<!-- triage:external v1 … -->` block — `run` starts no further
+  session and hands the card to a human with the project and change the
+  block names.
+
+An answer carries at most one of the two, only when its step applies, and an
+`ESCALATE` carries neither. Step 7's split moves requirements into a code
+ticket of *this* project; step 8's block names a change in *another*
+project.
 
 ## Worked answers
 
@@ -264,7 +280,17 @@ One instance each of the rules in steps 5, 6 and 8, kept short so a reader can s
 
 - A `blocked` event asks whether to pin, with a string-presence test in `tests/test_pipeline_contract.py`, the wording of a new stagnation check in the process-ticket skill (#122). Answer: extract the decidable stagnation check into a script and give that script real behaviour tests. The wording in skills/process-ticket/SKILL.md carries no test; its correctness is verified by a real run or by the reviewer, and the evidence kind is `none`, not a `driving-test`. STATUS: ANSWERED — extract the check into a script with behaviour tests, leave the prose untested — a pin test proves the string exists, not the behaviour.
 - A `blocked` event says the plan cannot satisfy "a real run against the real `claude` CLI (no fake)" inside the PR's own run, and asks whether to accept a red PR run or stop (`lib-python-harness#27` shape). The package ticket carries a `## Frame (gatekeeper)` comment with `Not proven by this package: a real run against the real claude CLI (no fake)`. STATUS: ANSWERED — proceed without the live run; build and review against the frame comment's acceptance criterion — the frame comment already struck that clause for this package.
-- A `blocked` event on a server package says its acceptance criterion — a tool returns the right value — fails because the parsing code sits in a library the project pins and the library's released version gets it wrong; the event cites the library's file and line, and its options are a fix in that library, a workaround copied into this project, or tests and docs only. The workaround would fork the library's behaviour and a tests-only PR leaves the symptom in place; the fix belongs in the library, and the tests on top of it only mean something once it exists. STATUS: EXTERNAL — example-org/lib-parsing — make its parser return the right value and release that version — no session in this project can meet the criterion before the library changes.
+- A `blocked` event (attempt 1) on server package #57 says its acceptance criterion — a tool returns the right value — fails because the parsing code sits in a library the project pins and the library's released version gets it wrong; the event cites the library's file and line, and its options are a fix in that library, a workaround copied into this project, or tests and docs only. The workaround would fork the library's behaviour and a tests-only PR leaves the symptom in place; the fix belongs in the library, and the tests on top of it only mean something once it exists. The answer ends:
+
+  ```
+  <!-- triage:external v1
+  package: 57
+  attempt: 1
+  project: example-org/lib-parsing
+  change: make its parser return the right value and release that version
+  -->
+  STATUS: ANSWERED — fix the parser in example-org/lib-parsing — no session in this project can meet the criterion before the library changes
+  ```
 
 ## Hard rules
 

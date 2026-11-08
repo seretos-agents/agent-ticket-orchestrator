@@ -534,11 +534,13 @@ This procedure runs for **a `blocked` event, or a `failed` event whose failed ve
    `blocked` event that text is the question, options, recommendation and what was already
    checked; for a `failed` event it is the failure summary, which triage reads as the question.
    It reads ticket, comments, siblings and code — the same test the `clarifier` already applies
-   to Backlog questions — and ends with one of three status lines: `STATUS: ANSWERED` (a chosen
-   option plus reasoning), `STATUS: EXTERNAL` (the chosen option needs a change in another
-   project first; the line names that project and the change), or `STATUS: ESCALATE` (why it is
-   not answerable from context).
-2. **`ANSWERED`, and the answer carries no `<!-- triage:split v1` block** →
+   to Backlog questions — and ends with one of two status lines: `STATUS: ANSWERED` (a chosen
+   option plus reasoning) or `STATUS: ESCALATE` (why it is not answerable from context). An
+   `ANSWERED` may carry one block directly above its status line: `<!-- triage:split v1 … -->`
+   (item 3) or `<!-- triage:external v1 … -->` (item 5). Look for both before you react; a block
+   is never ignored, so an `ANSWERED` with either block never takes item 2's re-dispatch.
+2. **`ANSWERED`, and the answer carries neither a `triage:split v1` nor a `triage:external v1`
+   block** →
    `add_comment(project_id, ticket_id=<package>, body=…)` with heading
    `## Blocked triage (run)` (the same heading for a `failed` event — it is the triage-once
    record for both), the question, the chosen option, and the reasoning, followed by
@@ -595,14 +597,15 @@ This procedure runs for **a `blocked` event, or a `failed` event whose failed ve
    - on a `failed` event: the `escalate` reaction of *The failed verdict* below — its comment,
      its `--reason failed` block, **Question**, worktree removal — with triage's reason as one
      more line of that comment.
-5. **`EXTERNAL`** (a `blocked` or a `failed` event alike) → the change the acceptance criterion
-   needs lies in another project, so another session here could only build around it, and might
-   go green and close the ticket with the symptom still there. No re-dispatch:
+5. **`ANSWERED`, and the answer carries a `<!-- triage:external v1 … -->` block** (a `blocked`
+   or a `failed` event alike) → the change the acceptance criterion needs lies in another
+   project, so another session here could only build around it, and might go green and close the
+   ticket with the symptom still there. No re-dispatch:
    1. `add_comment(project_id, ticket_id=<package>, body=…)` with heading
       `## Blocked triage (run)` — the triage-once record, as in item 2 — carrying the question,
-      the chosen option, one line `Change needed in <project>: <the change>` taken from triage's
-      status line and paragraph (required: it is what lets a human act without this run's
-      transcript), the line *"Escalated: the change this package needs lies in another
+      the chosen option, the reasoning, the `triage:external v1` block copied verbatim from
+      triage's answer (its `project:` and `change:` lines are what let a human act without this
+      run's transcript), the line *"Escalated: the change this package needs lies in another
       project."*, followed by the block of
       `ato-event.py render --event escalated --package <package id> --reason external-dependency <session>`
       — that block only, no `triage-answered` block on this comment.
@@ -714,9 +717,10 @@ weighs its inputs is the script's, not yours to re-derive:
 - **`verdict: retry`** → **one** fresh start (step b, same script) with `attempt+1`, same
   worktree. When it ends, react to its latest event from the top of 2c.
 - **`verdict: triage`** → run *Blocked and failed events are triaged before they cost a retry*
-  (above) with this `failed` event as the event. Its `ANSWERED` re-dispatches `attempt+1`; its
-  `EXTERNAL` is that procedure's `EXTERNAL` reaction (`--reason external-dependency`, no
-  re-dispatch); its `ESCALATE` is the `escalate` reaction just below.
+  (above) with this `failed` event as the event. Its `ANSWERED` re-dispatches `attempt+1`; an
+  `ANSWERED` carrying a `triage:external v1` block takes that procedure's item 5 reaction
+  instead (`--reason external-dependency`, no re-dispatch); its `ESCALATE` is the `escalate`
+  reaction just below.
 - **`verdict: escalate`** → `add_comment` summarising this run's attempts of the package (event,
   `rounds` with the findings-vs-infra split, `pr`, every `RUNDIR`) and the script's `reason:`
   line, followed by the block of
@@ -963,8 +967,8 @@ one triage-driven re-dispatch when a `blocked` event, or a findings `failed`
 after the retry, turns out to be `ANSWERED` — or, when that answer carries a
 `triage:split v1` block, one gatekeeper split session in its place (also 2c —
 see *Blocked and failed events are triaged before they cost a retry*, above;
-`failed-verdict.py` applies the ceiling and triage-once to a `failed` ending). A triage that ends
-`EXTERNAL` spends that slot and starts nothing. A package can legitimately reach `attempt=3` — failed once,
+`failed-verdict.py` applies the ceiling and triage-once to a `failed` ending). An `ANSWERED`
+carrying a `triage:external v1` block spends that slot and starts nothing. A package can legitimately reach `attempt=3` — failed once,
 `ci-green` on the second try, conflicted and rebased on the third — and
 `attempt` stays a monotonically increasing session counter across all of it,
 exactly as it already was. **Hard ceiling: at most three package sessions per
@@ -1010,7 +1014,7 @@ as an ordinary retry, just `attempt+1`.
   that direction is human-only (→ Todo or → Backlog).
 - **Column writes plus the one close are the status channel; comments only where this skill says**
   (failure summary before → Question, the one-line escalation, the
-  `## Blocked triage (run)` comment — the `EXTERNAL` one included, which names the other
+  `## Blocked triage (run)` comment — the external-block one included, which names the other
   project — the one-line `split-failed` escalation, the
   merge-failed notes, the merge-outcome
   classification's own comments: both merge attempts on a persisted conflict,
