@@ -32,6 +32,13 @@ Decisions answering the plan-critic's notes:
     `created:` key for the same pair (its value may be `none` when the cut
     only re-scoped the two existing tickets), so the cut happens once.
 
+R4 evidence note (test-critic round 2, F1): the plan's R4 (narrowing the
+contract assertions in tests/test_pipeline_contract.py) is re-declared
+`existing-suite`. It is prose presence in markdown, which the repo's contract
+tests own; the implementer narrows those assertions and the existing contract
+tests must stay green on the SKILL.md as edited. No driving test is added for it
+(the earlier variant-splicing tests only checked strings they injected).
+
 The script does not exist when these tests are first written (phase=tests):
 RED is the missing `verdict:` line on stdout (the interpreter's "can't open
 file" lands on stderr).
@@ -139,10 +146,18 @@ def test_a_later_comment_without_a_choice_does_not_cancel_option_a():
     assert out.get("verdict") == "apply" and out.get("reply") == "r1", where(r)
 
 
+def test_a_later_reply_repeating_a_decides_with_its_own_id():
+    r = run(base([c("#9", "r1", 5, "Option b"), c("#14", "r2", 9, "On reflection, option a")]))
+    out = parse(r)
+    assert out.get("verdict") == "apply" and out.get("reason") == "chose-a", where(r)
+    assert out.get("reply") == "r2", where(r)
+
+
 def test_a_later_reply_naming_another_choice_overrides_an_earlier_a():
     r = run(base([c("#9", "r1", 5, "Option a"), c("#14", "r2", 9, "Actually, option b")]))
     out = parse(r)
     assert out.get("verdict") == "nothing" and out.get("reason") == "chose-b", where(r)
+    assert out.get("reply") == "r2", where(r)
     assert not any(k.startswith("slice_") for k in out), where(r)
 
 
@@ -167,6 +182,7 @@ def test_non_a_answers_apply_nothing(reply_text, reason):
     out = parse(r)
     assert out.get("verdict") == "nothing", where(r)
     assert out.get("reason") == reason, where(r)
+    assert out.get("reply") == "r1", where(r)
     assert not any(k.startswith("slice_") for k in out), where(r)
     assert r.returncode == 0, r.stderr
 
@@ -227,3 +243,36 @@ def test_invalid_json_exits_one():
     r = subprocess.run([sys.executable, str(SCRIPT)], input="not json",
                        capture_output=True, text=True)
     assert r.returncode == 1, where(r)
+
+
+PROPOSAL_2 = """## Clarification needed (gatekeeper)
+
+### Q1 Two large overlapping tickets - cut them differently before they run?
+**About:** #21 (importer) and #33 (exporter) are both large and share the codec.
+**Decision:** whether to re-cut.
+- (a) Re-cut into these slices *(recommended)* — 1. Read a file — a user can then: open a saved project (serves #21) · 2. Write a file — a user can then: save a project and reopen it (serves #21, #33) · 3. Export to CSV — a user can then: open the data in a spreadsheet (serves #33)
+- (b) Run both as filed, in dependency order — overlap.
+- (c) I cut them myself — reply here.
+
+<!-- gatekeeper:oversized v1
+pair: #21,#33
+proposal_on: #21
+-->"""
+
+POINTER_2 = POINTER.replace("#9", "#21").replace("#14", "#33").replace("pair: #21,#33", "pair: #21,#33")
+
+
+def test_a_second_proposal_is_parsed_not_hard_coded():
+    r = run([c("#21", "p1", 0, PROPOSAL_2), c("#33", "p2", 1, POINTER_2),
+             c("#33", "r7", 5, "Option a")])
+    out = parse(r)
+    assert out.get("verdict") == "apply" and out.get("reason") == "chose-a", where(r)
+    assert out.get("pair") == "#21,#33" and out.get("proposal_on") == "#21", where(r)
+    assert out.get("reply") == "r7", where(r)
+    assert out.get("slices") == "3", where(r)
+    assert [out.get(f"slice_{i}") for i in (1, 2, 3)] == [
+        "Read a file", "Write a file", "Export to CSV"], where(r)
+    assert [out.get(f"observable_{i}") for i in (1, 2, 3)] == [
+        "open a saved project", "save a project and reopen it",
+        "open the data in a spreadsheet"], where(r)
+    assert [out.get(f"covers_{i}") for i in (1, 2, 3)] == ["#21", "#21,#33", "#33"], where(r)
