@@ -258,18 +258,82 @@ def test_the_developer_is_a_dependency_and_the_prompt_engineer_is_optional():
     assert f'PLUGIN = "{prose_plugin}"' in detector
 
 
+def _check_step1_label_filters(text):
+    """Assert the label exclusion shape of gatekeeper Step 1 in `text`.
+
+    Candidate calls carry `not_labels=[...]` (must contain gatekeeper-ignore,
+    same list on both columns); report-only calls carry one single-label
+    `labels=[...]` per excluded label per column. Tolerates extra excluded
+    labels (#108's blocked-upstream)."""
+    import re
+
+    def lists(call, key):
+        m = re.search(r"(?<!\w)" + key + r"=\[([^\]]*)\]", call)
+        return None if m is None else [t.strip().strip("\"'") for t in m.group(1).split(",") if t.strip()]
+
+    def column(call):
+        return re.search(r'column="(\w+)"', call).group(1)
+
+    step1 = text.split("## Step 1", 1)[1].split("## Step 2", 1)[0]
+    calls = re.findall(r"^list_tickets\(.*\)$", step1, re.M)
+    candidates = [c for c in calls if lists(c, "not_labels") is not None]
+    reports = [c for c in calls if lists(c, "labels") is not None]
+    assert sorted(column(c) for c in candidates) == ["Backlog", "Question"]
+    for c in candidates:
+        assert "gatekeeper-ignore" in lists(c, "not_labels"), f"candidate call lacks the ignore filter: {c}"
+    assert lists(candidates[0], "not_labels") == lists(candidates[1], "not_labels"), "one filter, both columns"
+    excluded = lists(candidates[0], "not_labels")
+    for c in reports:
+        assert len(lists(c, "labels")) == 1, f"report-only calls carry one label each: {c}"
+    assert {lists(c, "labels")[0] for c in reports} == set(excluded)
+    for label in excluded:
+        assert sorted(column(c) for c in reports if lists(c, "labels") == [label]) == ["Backlog", "Question"]
+    assert len(calls) == len(candidates) + len(reports) == 2 + 2 * len(excluded)
+    later = text.split("## Step 2", 1)[1].split("## Hard rules", 1)[0]
+    for label in excluded:
+        stripped = re.sub(r"\w+ \(" + re.escape(label) + r"\)", "", later)
+        assert label not in stripped, f"no per-step {label} check after Step 1"
+
+
 def test_both_candidate_enumerations_carry_the_ignore_filter():
     """#37: the exclusion lives in Step 1's list_tickets calls and nowhere
     else -- both columns, same label token as the report-only calls."""
-    import re
-    step1 = _text(GATEKEEPER).split("## Step 1", 1)[1].split("## Step 2", 1)[0]
-    calls = re.findall(r"^list_tickets\(.*\)$", step1, re.M)
-    excluded = [c for c in calls if 'not_labels=["gatekeeper-ignore"]' in c]
-    counted = [c for c in calls if ' labels=["gatekeeper-ignore"]' in c]
-    for group in (excluded, counted):
-        assert sorted(re.search(r'column="(\w+)"', c).group(1) for c in group) == ["Backlog", "Question"]
-    assert len(calls) == 4
-    later = _text(GATEKEEPER).split("## Step 2", 1)[1].split("## Hard rules", 1)[0]
-    assert "gatekeeper-ignore" not in later.replace("ignored (gatekeeper-ignore)", ""), (
-        "no per-step label check after Step 1"
+    _check_step1_label_filters(_text(GATEKEEPER))
+
+
+def _replace_once(text, old, new):
+    assert text.count(old) == 1, f"SKILL.md no longer contains exactly one: {old}"
+    return text.replace(old, new)
+
+
+def _blocked_upstream_shape(text):
+    """Today's SKILL.md rewritten into the Step 1 shape #108 will produce."""
+    for col in ("Backlog", "Question"):
+        text = _replace_once(
+            text,
+            f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])',
+            f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])',
+        )
+        rep = f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["gatekeeper-ignore"])'
+        text = _replace_once(text, rep, rep + "\n" + rep.replace("gatekeeper-ignore", "blocked-upstream"))
+    return _replace_once(
+        text,
+        "`ignored (gatekeeper-ignore): <n> — #<id>, #<id>`",
+        "`ignored (gatekeeper-ignore): <n> — #<id>, #<id>` and `blocked upstream (blocked-upstream): <n>`",
     )
+
+
+def test_ignore_filter_check_accepts_the_blocked_upstream_shape():
+    _check_step1_label_filters(_blocked_upstream_shape(_text(GATEKEEPER)))
+
+
+def test_ignore_filter_check_rejects_a_column_without_the_filter():
+    import pytest
+    text = _blocked_upstream_shape(_text(GATEKEEPER))
+    text = _replace_once(
+        text,
+        'column="Question", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])',
+        'column="Question", status="open", limit=100, omit_body=True, not_labels=["blocked-upstream"])',
+    )
+    with pytest.raises(AssertionError):
+        _check_step1_label_filters(text)
