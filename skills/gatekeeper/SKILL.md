@@ -237,7 +237,9 @@ bundler may fold further tickets into them or leave them as-is.
      clarification comment carries a `gatekeeper:oversized` block whose
      `proposal_on:` names another ticket, the owner answers *there* — apply
      this test to that ticket's comments instead, so both cards of the pair
-     return in the same pass.
+     return in the same pass. Any newer comment there brings both back;
+     whether it chose (a) is not yours to read here — Step 2 hands that to
+     `oversized-answer.py`.
    - **A missing-prose-lane question** (Step 2): when your latest
      clarification comment carries a `<!-- gatekeeper:prose-lane v1` block
      (it sits directly under the heading, so the 200-character scan above
@@ -286,7 +288,22 @@ so it dispatches no bundler at all.
 `prior_rationale` carries the prior pass's actual reasoning, distinct from the reason kind above — not just the kind — with `source` naming which comment it came from.
 `reason: "unknown"` and empty `prior_rationale` when nothing is recoverable. A first-generation candidate (never through Question before) gets no `previous_cut` at all.
 
-**Collect `oversized answered` for a returning oversized pair.** A candidate that came back from Question with a `gatekeeper:oversized` block in its clarification comment (Step 1) was asked about together with the other ticket of its `pair:`. Read the owner's reply — the comments newer than the question on the `proposal_on:` ticket, in full — and pass it to the bundler verbatim, so the pair is not reported a second time.
+**Read a returning oversized pair's answer with a script, before the bundler runs.** A candidate that came back from Question with a `gatekeeper:oversized` block in its clarification comment (Step 1) was asked about together with the other ticket of its `pair:`; do this once per pair. Which option the owner chose is decided by `scripts/gatekeeper/oversized-answer.py`, never by your own reading of the reply. Its input is the full comments of **both** tickets:
+
+1. For `#a` and for `#b`: `list_comments(project_id, ticket_id=<it>, order="desc", limit=50, body_max_chars=600)`, then `get_comment(project_id, comment_id=<id>, ticket_id=<it>)` for every comment that came back with `body_truncated: true` — a truncated proposal loses its slice line, and the script then finds no slices.
+2. Pipe one JSON object on **stdin** to `python "${CLAUDE_PLUGIN_ROOT}/scripts/gatekeeper/oversized-answer.py"` (`python3` if `python` is not on PATH) — the same stdin-JSON → stdout convention as `relation-readback.py`:
+
+   ```
+   {"comments": [{"ticket": "#<id>", "id": "<comment id>", "created_at": "<as returned>", "body": "<the full body>"}, … every comment of both tickets]}
+   ```
+
+   `ticket` is written `#<id>`, the form the block's `proposal_on:` uses.
+3. Read stdout:
+   - `verdict: apply` (`reason: chose-a`) → apply the cut now, before the bundler dispatch: *Applying answer (a)*, in *An oversized pair is a Question; answer (a) is a cut* below.
+   - `verdict: nothing`, whatever its `reason` (`chose-b`, `chose-c`, `unclear`, `no-reply`, `no-question`, `no-proposal`, `applied`) → cut nothing, create nothing, write no `recut`, touch no body; both tickets are ordinary `single` candidates. `applied` means an earlier pass already made the cut — it is never made twice.
+   - exit 1 (`invalid payload: …`) → the same as `nothing`, and record `oversized answer unread: #a, #b — <that line>` for Step 5.
+
+On every verdict, pass the owner's reply — the comments newer than the question on the `proposal_on:` ticket — to the bundler verbatim as `oversized answered`, so the pair is not reported a second time.
 
 Dispatch the `bundler` **once**, unnamed, synchronous, fresh:
 
@@ -613,16 +630,17 @@ No epic is materialised for it.
 Each member's `depends_on` entries, including the kept large↔large edge, are written per member through the ordinary Step 3.5 path.
 Report it in Step 5 as `collision package rejected (2 large tickets): #a, #b are now single`.
 
-### An oversized pair is a Question, not a cut
+### An oversized pair is a Question; answer (a) is a cut
 
 The bundler reports two overlapping `size: large` tickets it declined to
 bundle as an `oversized` entry (absent on an ordinary pass): the pair, what
 overlaps, and a **proposed vertical split** — slices that each name
 something a user of the software can observe — or `"slices": []` when it
-found no honest one. You notice the pair and you ask; you never cut. A size
-judgement is not a reason to move scope between two tickets without the
-owner seeing it. For each entry, with `#a` the **lower ticket id** of the
-pair (a deterministic tie-break, not a judgement) and `#b` the other:
+found no honest one. You notice the pair and you ask, and you cut only on the
+owner's recorded answer (a). A size judgement is not a reason to move scope
+between two tickets without the owner seeing it. For each entry, with `#a`
+the **lower ticket id** of the pair (a deterministic tie-break, not a
+judgement) and `#b` the other:
 
 1. **Idempotency first.** `list_comments(project_id, ticket_id=#a, order="desc", limit=20, body_max_chars=600)`
    — a `gatekeeper:oversized` block naming this pair with no comment newer
@@ -633,8 +651,9 @@ pair (a deterministic tie-break, not a judgement) and `#b` the other:
    the pair again anyway, ignore the entry — and treat both tickets as the
    ordinary `single` packages they are. The reply reaches the clarifier as
    an ordinary comment.
-   You do not split a ticket or edit a body on the owner's behalf; an
-   accepted split is the owner's write.
+   You never edit a ticket body. Answer (c) is the owner's own cut; answer
+   (a), read by `oversized-answer.py` in Step 2, is yours — *Applying answer
+   (a)*, below — and nothing else is.
 2. **Post the proposal, once, on `#a`:**
 
    ```
@@ -669,7 +688,69 @@ pair (a deterministic tie-break, not a judgement) and `#b` the other:
    whichever way the owner decides.
 
 No new answer path exists for this: Step 1's test for your own answered
-Question cards is what brings the pair back.
+Question cards is what brings the pair back, and Step 2's
+`oversized-answer.py` read decides what the answer was.
+
+**Applying answer (a).** Only on `verdict: apply` from Step 2's
+`oversized-answer.py` read, at that point — before the bundler is
+dispatched — and never for an entry the bundler reports. Points 2–4 above do
+not apply: no proposal, no pointer, no move to Question. The script's stdout
+is your only source for the cut: `pair:`, `proposal_on:`, `slices: <n>` and,
+per slice, `slice_<i>`, `observable_<i>` and `covers_<i>`. With `#a` and `#b`
+the two ids of `pair:`, in this order:
+
+a. **Assign the slices.** For `#a`, then `#b`: the lowest-numbered
+   unassigned slice whose `covers_<i>` names that ticket — or, when none
+   does, the lowest-numbered unassigned slice — becomes that ticket's scope.
+   Its body stays as it is; d. records the new scope. Every slice still
+   unassigned gets a ticket of its own, in slice order, with no
+   `custom_fields`, so it lands in Backlog, and a body of exactly the two
+   headings `templates/ISSUE_TEMPLATE/task.yml` requires:
+
+   ```
+   create_ticket(project_id, title="<slice_i>", labels=[], template="task", body="### Goal
+   <slice_i> — slice <i> of the re-cut of #a/#b, answer (a) on #<proposal_on>
+
+   ### Acceptance
+   A user can then: <observable_i>")
+   ```
+
+b. **Record the cut** on the `proposal_on:` ticket, right after the last
+   `create_ticket` and before any other write:
+
+   ```
+   add_comment(project_id, ticket_id=<proposal_on>, body="## Oversized cut applied (gatekeeper)
+
+   The owner chose answer (a). Slices: 1. <slice_1> → #<its ticket> · 2. <slice_2> → #<its ticket> · …
+
+   <!-- gatekeeper:oversized v1
+   pair: <the script's pair: value, verbatim>
+   created: <every ticket a. created, as #<id>, comma-separated | none>
+   -->")
+   ```
+
+   `created: none` when every slice went to `#a` or `#b`. This block is the
+   idempotency record: once it exists, the script answers
+   `reason: applied` and no later pass files a slice again.
+c. **Order the slices.** The ticket of slice i+1 waits for the ticket of
+   slice i: add slice i's ticket to the `deps` of slice i+1's ticket when the
+   package map is built (below). Step 3.5 writes the `blocked_by` and
+   verifies it with `relation-readback.py`.
+d. **Move the scope.** For each slice, and each ticket in its `covers_<i>`
+   that is not that slice's own ticket, emit a `recut` entry
+   `{from: <the covered ticket>, to: <the slice's ticket>, slice: <slice_i>,
+   why: "the owner chose answer (a) on the oversized pair #a/#b"}` for
+   Step 3.7. Its `Non-goal (re-cut to …)` and `Additional requirement
+   (re-cut from …)` lines are what tell the lower plugin the new scope, since
+   no body changes.
+e. **Carry on in this pass.** The new tickets join the candidate list;
+   `#a` and `#b` stay in it as ordinary returning candidates; the bundler is
+   dispatched with `oversized answered` as above, and an `oversized` entry it
+   still reports for this pair is ignored (point 1). Every one of them is
+   clarified in Step 3 like any other package, and each that ends `CLEAR`
+   moves to Planned in Step 4. Record
+   `oversized cut applied (answer a): #a, #b → created <ids | none>` for
+   Step 5.
 
 From here on, *package ticket* means the epic, or the single ticket.
 
@@ -1113,7 +1194,7 @@ label and post a comment — exactly the same shape as
 the clarifier's read-only output into board state.
 
 ## Step 3.7 — apply a recut
-Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry of this pass. Step 2's lane split is the only source of one, in either direction: its `from` is the ticket that was split and its `to` the ticket created there — the prose half after a path split, the code half after a mid-development split, whose `why` names the prose lane's tier selector. The bundler emits none — a size judgement is never applied as a cut (Step 2, *An oversized pair is a Question, not a cut*) — so the absence of a confirmation round below describes only a split the architecture forces, two lanes needing two lower plugins.
+Runs on **both** clarifier statuses (`CLEAR` and `NEEDS_INPUT`), immediately after Step 3.5, for every `recut` entry of this pass. Step 2 has two sources of one. The lane split, in either direction: its `from` is the ticket that was split and its `to` the ticket created there — the prose half after a path split, the code half after a mid-development split, whose `why` names the prose lane's tier selector. And an owner-accepted oversized cut — answer (a), read by `oversized-answer.py` as `verdict: apply` (Step 2, *Applying answer (a)*): its `from` is a ticket of the pair a slice covers and its `to` that slice's ticket. The bundler emits none. There is no confirmation round below because neither needs one: the lane split is forced by the architecture, two lanes needing two lower plugins, and the owner's (a) already is the confirmation of the oversized cut.
 
 For each `recut` entry, on **both** endpoints, in this order:
 
@@ -1316,7 +1397,7 @@ closed`, `dependency #t not found`, `frame block missing` (Step 3.5/3);
 `clarify order cycle: #a, #b` (Step 3); `premise fetch unsettled: #<pkg>`
 (Step 3's fetch round);
 `collision package rejected (2 large tickets): #a, #b are now single` (Step
-2); `recut applied: #<from> → #<to>` (Step 3.7, lane split only); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)` and `oversized pair still waiting: #a, #b` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:
+2); `recut applied: #<from> → #<to>` (Step 3.7); `oversized pair → Question: #a, #b (proposal on #a | no vertical split found)`, `oversized pair still waiting: #a, #b`, `oversized cut applied (answer a): #a, #b → created #<x>, #<y> | none` and `oversized answer unread: #a, #b — <the script's line>` (Step 2); `struck (unprovable here): #<pkg> — <clause>` for every `unprovable_here` value (Step 3); `unexplained relation gap:
 #<pkg> — #<ids>` for a package withheld from Planned (Step 3.5);
 `reverse dependency: #<d> blocked_by #<pkg> (written | already present |
 #<d> closed | not found | absorbed)` for every `needed_by` entry, and
@@ -1395,7 +1476,9 @@ are all in the Question column — then run
 - **Never dispatch the lower plugin** (`agent-autonomous-developer`) and never
   start a package session. You prepare; `run` executes.
 - **Never edit code, never open branches or PRs.** Your writes are: epics,
-  the other half of a lane split (either direction), `blocked_by`/`relates_to`
+  the other half of a lane split (either direction), the slice tickets of an
+  owner-accepted oversized cut and its `## Oversized cut applied (gatekeeper)`
+  record comment, `blocked_by`/`relates_to`
   relations, labels (including `regression-chain` and
   `lane:prose`), clarification comments,
   dependency comments, frame comments, regression-chain comments,
@@ -1410,8 +1493,8 @@ are all in the Question column — then run
 - **Never close or re-title original tickets.** A reframe is a proposal in a
   comment; the human edits the ticket body. The one close you make is Step
   0's `close: yes`, on a reopened ticket whose work has since merged.
-- **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly two places: the other half of a lane split (either direction) and an epic (both Step 2).
-- **You never apply a size-driven cut.** Two overlapping large tickets become one question with a proposed vertical split, and both cards go to Question (Step 2); the only `recut` you apply is the lane split's.
+- **An unprovable criterion is struck and recorded, never a ticket.** An `unprovable_here` value produces one line in the frame comment and one in the report — no ticket, no relation, no label, no `recut`, and nothing waits on it. You create tickets in exactly three places, all in Step 2: the other half of a lane split (either direction), an epic, and the slice tickets of an owner-accepted oversized cut.
+- **Never a size-driven cut without the owner's recorded answer (a).** Two overlapping large tickets become one question with a proposed vertical split, and both cards go to Question (Step 2); you cut them only when `oversized-answer.py` reads the owner's reply as `verdict: apply`, and once (its `created:` record). The other `recut` you apply is the lane split's.
 - **Bundle before clarify**, always.
 - **The lane comes from a script, never from a model** —
   `scripts/gatekeeper/classify-lane.py`, or, for a mid-development split, the
