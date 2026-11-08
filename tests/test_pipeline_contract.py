@@ -1803,8 +1803,7 @@ def test_bundler_slices_pass_the_observable_test_or_are_not_emitted():
     )
 
 
-def test_gatekeeper_turns_an_oversized_pair_into_one_question():
-    text = _read(GATEKEEPER)
+def _assert_oversized_question_contract(text):
     sec = _slice(
         text, "### An oversized pair is a Question, not a cut",
         "From here on, *package ticket* means",
@@ -1843,8 +1842,11 @@ def test_gatekeeper_turns_an_oversized_pair_into_one_question():
     assert '"oversized"' in json_block and '"recut"' not in json_block
 
 
-def test_gatekeeper_step_3_7_has_the_lane_split_as_its_only_source():
-    text = _read(GATEKEEPER)
+def test_gatekeeper_turns_an_oversized_pair_into_one_question():
+    _assert_oversized_question_contract(_read(GATEKEEPER))
+
+
+def _assert_step_3_7_recut_sources(text):
     first_para = _slice(text, "## Step 3.7", "## Step 4").split("\n\n", 1)[0]
     assert re.search(r"lane split is the only source", first_para), first_para
     assert re.search(r"bundler emits none", first_para), first_para
@@ -1854,6 +1856,10 @@ def test_gatekeeper_step_3_7_has_the_lane_split_as_its_only_source():
         l.startswith("- **") and "size-driven cut" in l and "lane split" in l
         for l in rules.splitlines()
     ), "a Hard rule must forbid a size-driven cut and name the lane split's recut"
+
+
+def test_gatekeeper_step_3_7_has_the_lane_split_as_its_only_source():
+    _assert_step_3_7_recut_sources(_read(GATEKEEPER))
 
 
 def test_agents_md_records_the_oversized_question_rule():
@@ -3150,8 +3156,7 @@ def test_gatekeeper_records_the_struck_clause_in_the_frame_comment():
     assert "struck (unprovable here)" in _slice(text, "## Step 5", "## Hard rules")
 
 
-def test_gatekeeper_creates_nothing_for_an_unprovable_criterion():
-    text = _read(GATEKEEPER)
+def _assert_creates_nothing_for_an_unprovable_criterion(text):
     assert len(_call_spans(text, "create_ticket")) == 2, (
         "exactly two create_ticket call sites remain: the lane split and the epic"
     )
@@ -3163,6 +3168,98 @@ def test_gatekeeper_creates_nothing_for_an_unprovable_criterion():
     assert rule, "a Hard rule must cover the struck criterion"
     for word in ("no ticket", "no relation", "no label"):
         assert word in rule[0], f"{word!r} missing from {rule[0]!r}"
+
+
+def test_gatekeeper_creates_nothing_for_an_unprovable_criterion():
+    _assert_creates_nothing_for_an_unprovable_criterion(_read(GATEKEEPER))
+
+
+# --- #103: the contract must accept a SKILL.md that applies the cut on (a) ---
+
+_OVERSIZED_START = "### An oversized pair is a Question, not a cut"
+_OVERSIZED_END = "From here on, *package ticket* means"
+
+_APPLY_ON_A_SECTION = """### An oversized pair is a Question, not a cut
+
+The pair is asked about once; see the proposal below.
+
+1. **Idempotency first.** `list_comments(project_id, ticket_id=#a, order="desc", limit=20, body_max_chars=600)`
+   - a `gatekeeper:oversized` block naming this pair with no comment newer
+   than it means the question is already posted and still waiting: post nothing and move nothing for this pair.
+2. **Post the proposal, once, on `#a`:**
+
+   ```
+   add_comment(project_id, ticket_id=#a, body="## Clarification needed (gatekeeper)
+
+   ### Q1 Two large overlapping tickets
+   **About:** #a and #b overlap.
+   **Decision:** whether to re-cut.
+   - (a) Re-cut into these slices *(recommended)* - 1. x
+   - (b) Run both as filed
+   - (c) I cut them myself
+
+   <!-- gatekeeper:oversized v1
+   pair: #a,#b
+   proposal_on: #a
+   -->")
+   ```
+
+   With `"slices": []`, option (a) is absent, (b) carries *(recommended)*.
+3. Point the other card at it.
+4. **Both cards go to Question** - `update_ticket(project_id, ticket_id=<each>, custom_fields={"Status": <native of Question>}, response="light")`.
+   Neither is clarified and neither is released this pass.
+5. **Answered (a).** Pipe both tickets' full comments to `oversized-answer.py`; only on `verdict: apply`:
+   `create_ticket(project_id, title=..., template="task", body="### Goal ...")`,
+   `add_relation(project_id, ticket_id=#b, kind="blocked_by", target=#new)`,
+   `update_ticket(project_id, ticket_id=#a, body=...)`, then
+   `add_comment(project_id, ticket_id=#a, body="## Re-cut applied (gatekeeper)
+<!-- gatekeeper:oversized v1
+pair: #a,#b
+created: #new
+-->")`.
+   `nothing` applies nothing.
+
+"""
+
+_APPLY_ON_A_STEP_37 = (
+    "Runs on both clarifier statuses. Two sources of a `recut`: Step 2's lane split, and "
+    "an oversized pair's cut the owner accepted with option (a). The bundler emits none.\n\n"
+)
+
+_APPLY_ON_A_RULE = (
+    "- **You never apply a size-driven cut without the owner's recorded answer (a).** "
+    "Unanswered, an oversized pair only asks; the lane split's `recut` is the other source.\n"
+)
+
+
+def _apply_on_a_variant(text, with_gate=True):
+    sec_start = text.index(_OVERSIZED_START)
+    sec_end = text.index(_OVERSIZED_END, sec_start)
+    section = _APPLY_ON_A_SECTION
+    if not with_gate:
+        section = section.replace("`oversized-answer.py`", "the reply").replace("`verdict: apply`", "a yes")
+    text = text[:sec_start] + section + text[sec_end:]
+    s37 = text.index("## Step 3.7")
+    body_start = text.index("\n\n", s37) + 2
+    body_end = text.index("\n\n", body_start)
+    text = text[:body_start] + _APPLY_ON_A_STEP_37.rstrip("\n") + text[body_end:]
+    r0 = text.index("## Hard rules")
+    old = next(l for l in text[r0:].splitlines(keepends=True) if "size-driven cut" in l)
+    return text.replace(old, _APPLY_ON_A_RULE, 1)
+
+
+def test_contract_narrowing_accepts_an_apply_on_a_skill():
+    variant = _apply_on_a_variant(_read(GATEKEEPER))
+    assert "oversized-answer.py" in variant and "verdict: apply" in variant
+    _assert_oversized_question_contract(variant)
+    _assert_step_3_7_recut_sources(variant)
+    _assert_creates_nothing_for_an_unprovable_criterion(variant)
+
+
+def test_contract_narrowing_rejects_an_ungated_cut():
+    variant = _apply_on_a_variant(_read(GATEKEEPER), with_gate=False)
+    with pytest.raises(AssertionError):
+        _assert_oversized_question_contract(variant)
 
 
 def test_triage_answers_a_blocked_event_about_struck_evidence():
