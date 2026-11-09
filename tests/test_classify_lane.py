@@ -13,6 +13,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CLASSIFY_LANE = REPO_ROOT / "scripts" / "gatekeeper" / "classify-lane.py"
 
@@ -268,30 +270,30 @@ def _check_step1_label_filters(text):
     import re
 
     def lists(call, key):
-        m = re.search(r"(?<!\w)" + key + r"=\[([^\]]*)\]", call)
+        m = re.search(r"(?<!\w)" + key + r"\s*=\s*\[([^\]]*)\]", call)
         return None if m is None else [t.strip().strip("\"'") for t in m.group(1).split(",") if t.strip()]
 
     def column(call):
-        return re.search(r'column="(\w+)"', call).group(1)
+        return re.search(r'column\s*=\s*"(\w+)"', call).group(1)
 
     step1 = text.split("## Step 1", 1)[1].split("## Step 2", 1)[0]
-    calls = re.findall(r"^list_tickets\(.*\)$", step1, re.M)
+    calls = re.findall(r"^[ 	]*list_tickets\([^)]*\)", step1, re.M)
     candidates = [c for c in calls if lists(c, "not_labels") is not None]
     reports = [c for c in calls if lists(c, "labels") is not None]
-    assert sorted(column(c) for c in candidates) == ["Backlog", "Question"]
+    assert sorted(column(c) for c in candidates) == ["Backlog", "Question"], "candidate calls are exactly Backlog and Question"
     for c in candidates:
         assert "gatekeeper-ignore" in lists(c, "not_labels"), f"each candidate list contains gatekeeper-ignore: missing in {c}"
     assert lists(candidates[0], "not_labels") == lists(candidates[1], "not_labels"), "one filter, both columns"
     excluded = lists(candidates[0], "not_labels")
     for c in reports:
         assert len(lists(c, "labels")) == 1, f"report-only calls carry one label each: {c}"
-    assert {lists(c, "labels")[0] for c in reports} == set(excluded)
+    assert {lists(c, "labels")[0] for c in reports} == set(excluded), "report-only labels equal the excluded labels"
     for label in excluded:
-        assert sorted(column(c) for c in reports if lists(c, "labels") == [label]) == ["Backlog", "Question"]
-    assert len(calls) == len(candidates) + len(reports) == 2 + 2 * len(excluded)
+        assert sorted(column(c) for c in reports if lists(c, "labels") == [label]) == ["Backlog", "Question"],             "one report-only call per excluded label per column"
+    assert len(calls) == len(candidates) + len(reports) == 2 + 2 * len(excluded),         "Step 1 has 2 + 2 * len(excluded) list_tickets calls"
     later = text.split("## Step 2", 1)[1].split("## Hard rules", 1)[0]
     for label in excluded:
-        stripped = re.sub(r"\w+ \(" + re.escape(label) + r"\)", "", later)
+        stripped = re.sub(r"\w+ \(`?" + re.escape(label) + r"`?\)", "", later)
         assert label not in stripped, f"no per-step {label} check after Step 1"
 
 
@@ -301,42 +303,77 @@ def test_both_candidate_enumerations_carry_the_ignore_filter():
     _check_step1_label_filters(_text(GATEKEEPER))
 
 
-def _replace_once(text, old, new):
-    assert text.count(old) == 1, f"SKILL.md no longer contains exactly one: {old}"
-    return text.replace(old, new)
+def _cand(col, labels, wrapped=False):
+    nl = ", ".join(f'"{l}"' for l in labels)
+    if wrapped:
+        return (f'list_tickets(\n    not_labels=[{nl}],\n'
+                f'    project_id=project_id, status="open", limit=100,\n'
+                f'    omit_body=True, fields="compact",\n    column="{col}")')
+    return f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, not_labels=[{nl}])'
 
 
-def _blocked_upstream_shape(text):
-    """Today's SKILL.md rewritten into the Step 1 shape #108 will produce."""
-    for col in ("Backlog", "Question"):
-        text = _replace_once(
-            text,
-            f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])',
-            f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])',
-        )
-        rep = f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["gatekeeper-ignore"])'
-        text = _replace_once(text, rep, rep + "\n" + rep.replace("gatekeeper-ignore", "blocked-upstream"))
-    return _replace_once(
-        text,
-        "`ignored (gatekeeper-ignore): <n> — #<id>, #<id>`",
-        "`ignored (gatekeeper-ignore): <n> — #<id>, #<id>` and `blocked upstream (blocked-upstream): <n>`",
-    )
+def _rep(col, label):
+    return (f'list_tickets(project_id, column="{col}", status="open", limit=100, omit_body=True, '
+            f'omit_nulls=True, labels=["{label}"])')
 
 
-def test_ignore_filter_check_accepts_the_blocked_upstream_shape():
-    _check_step1_label_filters(_blocked_upstream_shape(_text(GATEKEEPER)))
+def _step1_doc(calls, later=""):
+    """A synthetic gatekeeper SKILL.md: only the parts the checker reads."""
+    return ("intro\n\n## Step 1 \u2014 enumerate\n\n```\n" + "\n".join(calls)
+            + "\n```\n\n## Step 2 \u2014 bundle\n\n" + later
+            + "\n\n## Hard rules\n\n- `gatekeeper-ignore` and `blocked-upstream` are labels you never add.\n")
 
 
-def test_ignore_filter_check_rejects_a_column_without_the_filter():
-    import pytest
-    text = _blocked_upstream_shape(_text(GATEKEEPER))
-    # Drop the filter from BOTH candidate calls so the two lists stay equal and
-    # only the "each candidate list contains gatekeeper-ignore" assertion can fire.
-    for col in ("Backlog", "Question"):
-        text = _replace_once(
-            text,
-            f'column="{col}", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])',
-            f'column="{col}", status="open", limit=100, omit_body=True, not_labels=["blocked-upstream"])',
-        )
+_BOTH = ["gatekeeper-ignore", "blocked-upstream"]
+_REPORTS = [_rep(c, l) for l in _BOTH for c in ("Backlog", "Question")]
+_LATER = ("Report `ignored (gatekeeper-ignore): <n> \u2014 #<id>, #<id>` and "
+          "`held (blocked-upstream): <n> \u2014 #<id>, #<id>`.")
+
+
+def _post108(cands=None, reports=None, later=_LATER):
+    cands = cands if cands is not None else [_cand("Backlog", _BOTH), _cand("Question", _BOTH)]
+    reports = reports if reports is not None else _REPORTS
+    return _step1_doc(cands + reports, later)
+
+
+@pytest.mark.parametrize("doc", [
+    _step1_doc([_cand("Backlog", ["gatekeeper-ignore"]), _cand("Question", ["gatekeeper-ignore"]),
+                _rep("Backlog", "gatekeeper-ignore"), _rep("Question", "gatekeeper-ignore")],
+               "Report `ignored (gatekeeper-ignore): <n> \u2014 #<id>`."),
+    _post108(),
+    _post108([_cand("Backlog", _BOTH, wrapped=True), _cand("Question", _BOTH)]),
+    _post108(later="Report `held (`blocked-upstream`): <n>` and `ignored (gatekeeper-ignore): <n>`."),
+], ids=["today-shape", "post-108", "post-108-wrapped-reordered", "post-108-backticked-token"])
+def test_step1_label_filters_accepts(doc):
+    _check_step1_label_filters(doc)
+
+
+def test_step1_rejects_candidates_without_gatekeeper_ignore():
+    doc = _post108([_cand("Backlog", ["blocked-upstream"]), _cand("Question", ["blocked-upstream"])])
     with pytest.raises(AssertionError, match="each candidate list contains gatekeeper-ignore"):
-        _check_step1_label_filters(text)
+        _check_step1_label_filters(doc)
+
+
+def test_step1_rejects_different_candidate_lists():
+    doc = _post108([_cand("Backlog", _BOTH), _cand("Question", ["gatekeeper-ignore"])])
+    with pytest.raises(AssertionError, match="one filter, both columns"):
+        _check_step1_label_filters(doc)
+
+
+def test_step1_rejects_two_labels_in_one_report_call():
+    two = _rep("Backlog", "gatekeeper-ignore").replace('["gatekeeper-ignore"]', '["gatekeeper-ignore", "blocked-upstream"]')
+    doc = _post108(reports=[two] + _REPORTS[1:])
+    with pytest.raises(AssertionError, match="report-only calls carry one label each"):
+        _check_step1_label_filters(doc)
+
+
+def test_step1_rejects_missing_report_counterpart():
+    doc = _post108(reports=[r for r in _REPORTS if not ('"Question"' in r and "blocked-upstream" in r)])
+    with pytest.raises(AssertionError, match="one report-only call per excluded label per column"):
+        _check_step1_label_filters(doc)
+
+
+def test_step1_rejects_a_later_step_filtering_an_excluded_label():
+    later = _LATER + '\n\nlist_tickets(project_id, column="Backlog", not_labels=["blocked-upstream"])'
+    with pytest.raises(AssertionError, match="no per-step blocked-upstream check after Step 1"):
+        _check_step1_label_filters(_post108(later=later))
