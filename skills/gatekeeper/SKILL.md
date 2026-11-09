@@ -174,7 +174,7 @@ comment whose content you need:
    in its `gatekeeper:lane` block — a ticket is split after dispatch at most
    once, ever.
 
-**A split pass enumerates nothing.** With `single_ticket=<id>`, skip the four
+**A split pass enumerates nothing.** With `single_ticket=<id>`, skip the six
 calls below and every filter of this step. Run `get_ticket(project_id, <id>, include_relations=True)`
 and the three-part test above on that one ticket. It holds → the ticket is
 the pass's only candidate, in whatever column it sits (Doing while `run`'s
@@ -185,31 +185,37 @@ Step 2's mid-development split. It does not hold → report
 Every other pass enumerates:
 
 ```
-list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])
-list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore"])
+list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])
+list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True, not_labels=["gatekeeper-ignore", "blocked-upstream"])
 ```
 
-**A ticket carrying the `gatekeeper-ignore` label is not a candidate.** The
-label is a human's "not now": they set it, they remove it, and removing it
-puts the ticket back into the next pass unchanged. The exclusion happens
-here, in the two calls above, and nowhere else — an ignored ticket never
-reaches the bundler, the clarifier, an epic, a comment or a column move, so
-no later step checks for the label. That covers your own answered Question
-cards too: an ignored one is not re-bundled. How `not_labels` treats a label
-missing from the catalog is in `list_tickets`' tool description
-(agent-project-issues#363) — you never create the label, never add it and
-never remove it.
+**A ticket carrying the `gatekeeper-ignore` or the `blocked-upstream` label
+is not a candidate.** `gatekeeper-ignore` is a human's "not now": they set
+it, they remove it, and removing it puts the ticket back into the next pass
+unchanged. `blocked-upstream` is the ecosystem layer's hold on a ticket
+whose blocker lives in another repository: that layer sets it, and removes
+it itself once a blocker in this project exists, which puts the ticket back
+into the next pass unchanged. The exclusion happens here, in the two calls
+above, and nowhere else — an excluded ticket never reaches the bundler, the
+clarifier, an epic, a comment or a column move, so no later step checks for
+either label. That covers your own answered Question cards too: an excluded
+one is not re-bundled. How `not_labels` treats a label missing from the
+catalog is in `list_tickets`' tool description (agent-project-issues#363) —
+you never create either label, never add it and never remove it.
 
-Two more calls, for the report only — their result feeds Step 5's `ignored`
-line and nothing else:
+Four more calls, for the report only, one label each — `labels=` with two
+entries would match only tickets carrying both. Their results feed Step 5's
+`ignored` and `held` lines and nothing else:
 
 ```
 list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["gatekeeper-ignore"])
 list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["gatekeeper-ignore"])
+list_tickets(project_id, column="Backlog", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["blocked-upstream"])
+list_tickets(project_id, column="Question", status="open", limit=100, omit_body=True, omit_nulls=True, labels=["blocked-upstream"])
 ```
 
-A candidate whose `depends_on` names an ignored ticket is nothing new: the
-ignored ticket is a blocker outside this pass, the relation is written as
+A candidate whose `depends_on` names an ignored or held ticket is nothing
+new: that ticket is a blocker outside this pass, the relation is written as
 for any other (Step 3.5), and `run` withholds the dependent until the
 blocker is closed.
 
@@ -271,7 +277,7 @@ cards still waiting, <m> belong to run") — and, for a missing-prose-lane
 card the script still reports unavailable, its `still waiting` line.
 
 0 candidates → report "Backlog is empty / fully packaged, no answered
-Question cards" — plus the `ignored` line and any `repaired` /
+Question cards" — plus the `ignored` and `held` lines and any `repaired` /
 `repair skipped` lines of Step 5 — and stop.
 
 ## Step 2 — bundle (before clarifying — the order is mandatory)
@@ -1377,9 +1383,10 @@ or Step 2);
 verdict carried `close: yes`) and `repair skipped: #<id> — <error>` (Step 0).
 
 Next to the "<n> Question cards still waiting, <m> belong to run" count,
-always when it is not zero: `ignored (gatekeeper-ignore): <n> — #<id>, #<id>`
-from Step 1's two report-only calls — a forgotten label is only visible
-here.
+each one always when its count is not zero, both from Step 1's report-only
+calls: `ignored (gatekeeper-ignore): <n> — #<id>, #<id>` — a forgotten label
+is only visible here — and `held (blocked-upstream): <n> — #<id>, #<id>`,
+the tickets the ecosystem layer is holding.
 
 For a returning candidate whose verdict changed from `previous_cut`, report
 the `changed_by` confidence signal — `changed_from_previous: #<id> —
@@ -1457,6 +1464,9 @@ are all in the Question column — then run
 - **`gatekeeper-ignore` is the human's label.** It is filtered in Step 1's
   `list_tickets` calls and checked nowhere else; you never create, add or
   remove it.
+- **`blocked-upstream` is the ecosystem layer's label.** It is filtered in
+  Step 1's `list_tickets` calls and checked nowhere else; you never create,
+  add or remove it.
 - **Blocked is not unplanned.** A `blocked_by` relation never keeps a CLEAR
   package out of Planned (Step 3.5).
 - **An unexplained relation gap withholds Planned.** Unlike `blocked_by`, a relation write that `scripts/gatekeeper/relation-readback.py` cannot verify keeps the package out of Planned until the write succeeds, including a reverse edge written on another ticket (Step 3.5).
