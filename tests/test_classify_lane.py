@@ -289,8 +289,11 @@ def _check_step1_label_filters(text):
         assert len(lists(c, "labels")) == 1, f"report-only calls carry one label each: {c}"
     assert {lists(c, "labels")[0] for c in reports} == set(excluded), "report-only labels equal the excluded labels"
     for label in excluded:
-        assert sorted(column(c) for c in reports if lists(c, "labels") == [label]) == ["Backlog", "Question"],             "one report-only call per excluded label per column"
-    assert len(calls) == len(candidates) + len(reports) == 2 + 2 * len(excluded),         "Step 1 has 2 + 2 * len(excluded) list_tickets calls"
+        got = sorted(column(c) for c in reports if lists(c, "labels") == [label])
+        assert got == ["Backlog", "Question"], "one report-only call per excluded label per column"
+    assert len(calls) == len(candidates) + len(reports) == 2 + 2 * len(excluded), (
+        "Step 1 has 2 + 2 * len(excluded) list_tickets calls"
+    )
     later = text.split("## Step 2", 1)[1].split("## Hard rules", 1)[0]
     for label in excluded:
         stripped = re.sub(r"\w+ \(`?" + re.escape(label) + r"`?\)", "", later)
